@@ -1,0 +1,110 @@
+{% load djblets_utils i18n rb_extensions reviewtags %}
+
+{% if review.body_top or always_show_body_top %}
+<li>
+ <div class="review-comment-details {{review.body_top|yesno:',comment-details-empty'}}">
+  <div class="review-comment">
+   <pre class="reviewtext body_top {% rich_text_classname review.body_top_rich_text %}">{{review.body_top|render_markdown:review.body_top_rich_text}}</pre>
+  </div>
+ </div>
+
+ <div class="review-comment-thread">
+  {% reply_section review '' 'body_top' 'rcbt' review.body_top %}
+ </div>
+</li>
+{% endif %}
+
+{# General comments #}
+{% for comment in general_comments %}
+{%  include "reviews/entries/_review_comment.html" with comment_type="general_comments" %}
+{% endfor %}
+
+{# Screenshot comments #}
+{% for comment in screenshot_comments %}
+{%  definevar "comment_context" %}
+ <div class="review-comment-screenshot">
+  <a class="filename" href="{{comment.screenshot.get_absolute_url}}">
+   {{comment.screenshot.caption|default_if_none:comment.screenshot.filename}}
+  </a>
+  <div class="thumbnail">{{comment.image|safe}}</div>
+ </div>
+{%  enddefinevar %}
+{%  include "reviews/entries/_review_comment.html" with comment_type="screenshot_comments" %}
+{% endfor %}
+
+{# File attachment comments #}
+{% for comment in file_attachment_comments %}
+{%  definevar "comment_context" %}
+ <div class="review-comment-file-attachment">
+  <a class="filename" href="{{comment.get_absolute_url}}">
+   {{comment.get_link_text}}
+{%  if comment.file_attachment.attachment_revision %}
+   <span class="diffrevision">
+{%   if comment.diff_against_file_attachment %}
+{%    blocktrans with revision1=comment.diff_against_file_attachment.attachment_revision revision2=comment.file_attachment.attachment_revision %}
+    (Revisions {{revision1}} - {{revision2}})
+{%    endblocktrans %}
+{%   else %}
+{%    blocktrans with revision=comment.file_attachment.attachment_revision %}
+    (Revision {{revision}})
+{%    endblocktrans %}
+{%   endif %}
+   </span>
+{%  endif %}
+  </a>
+{%  with comment.thumbnail as thumbnail %}
+{%   if thumbnail %}
+  <div class="thumbnail">{{thumbnail|default:''|safe}}</div>
+{%   endif %}
+{%  endwith %}
+ </div>
+{%  enddefinevar %}
+{%  include "reviews/entries/_review_comment.html" with comment_type="file_attachment_comments" %}
+{% endfor %}
+
+{# Diff comments #}
+{% for comment in diff_comments %}
+{%  definevar "comment_context" %}
+ <div class="review-comment-diff" id="comment_container_{{comment.pk}}">
+  <table class="sidebyside loading">
+   <thead>
+    <tr class="filename-row">
+     <th class="filename">
+      <a href="{{comment.get_absolute_url}}">{{comment.filediff.dest_file_display}}</a>
+      <span class="diffrevision">
+{%  if comment.interfilediff %}
+{%   blocktrans with revision1=comment.filediff.diffset.revision revision2=comment.interfilediff.diffset.revision %}
+       (Diff revisions {{revision1}} - {{revision2}})
+{%   endblocktrans %}
+{%  else %}
+{%   blocktrans with revision=comment.filediff.diffset.revision %}
+       (Diff revision {{revision}})
+{%   endblocktrans %}
+{%  endif %}
+      </span>
+     </th>
+    </tr>
+   </thead>
+   <tbody>
+    <tr><td><pre>&nbsp;</pre></td></tr>{# header #}
+{%  for i in comment.num_lines|default_if_none:1|range %}
+    <tr><td><pre>&nbsp;</pre></td></tr>
+{%  endfor %}
+   </tbody>
+  </table>
+ </div>
+{%  enddefinevar %}
+{%  include "reviews/entries/_review_comment.html" with comment_type="diff_comments" %}
+{% endfor %}
+
+<li{% if not review.body_bottom %} style="display: none;"{% endif %}>
+ <div class="review-comment-details">
+  <div class="review-comment">
+   <pre class="reviewtext body_bottom {% rich_text_classname review.body_bottom_rich_text %}">{{review.body_bottom|render_markdown:review.body_bottom_rich_text}}</pre>
+  </div>
+ </div>
+
+ <div class="review-comment-thread">
+  {% reply_section review '' 'body_bottom' 'rcbb' review.body_bottom %}
+ </div>
+</li>

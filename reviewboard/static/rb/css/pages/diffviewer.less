@@ -22,12 +22,24 @@
 
 
 .sidebyside {
+  @diff-cell-padding: 1px;
   @linenum-padding-right: 4px;
-  @moved-border-width: 4px;
+  @linenum-padding-left: 2px;
+
+  /*
+   * Most of the moved range border sits on the line number cell as a
+   * border-right, and part sits on the content cell as a border-left. This
+   * gives us a full 4px, which is nicely visible, while allowing us to keep
+   * a reasonable padding in both types of cells, without also needing to
+   * press any text right up against the border.
+   */
+  @moved-border-right-width: 3px;
+  @moved-border-left-width: 1px;
 
   background: white;
-  border-collapse: collapse;
-  padding: 2px;
+  border-collapse: separate;
+  border-spacing: 0;
+  padding: 0;
   width: 100%;
   overflow: hidden;
 
@@ -41,7 +53,7 @@
       background: @diff-error-color;
       padding: 1em;
 
-      a {
+      a:not(.btn) {
         color: blue;
         font-weight: bold;
       }
@@ -64,6 +76,10 @@
         background: white;
         border: 1px #999 solid;
         padding: 1em;
+      }
+
+      td {
+        padding-top: 0;
       }
     }
 
@@ -128,11 +144,27 @@
   }
 
   pre {
-    .pre-wrap;
     font-size: 8pt;
     line-height: 140%;
     margin: 0;
-    padding-left: 2px;
+    padding-left: @linenum-padding-left;
+
+    /*
+     * We ideally want break-spaces, which behaves like pre-wrap but will break
+     * in the middle of whitespace. Not all browsers support this, so we have
+     * to fall back.
+     */
+    white-space: pre-wrap;
+    white-space: break-spaces;
+
+    /*
+     * overflow-wrap is the modern name, but some browsers need word-break
+     * to work right. Edge, IE, and Safari, for instance, do not support this or
+     * treat it correctly at the time of this writing (April 11, 2017). Guides
+     * suggest specifying both, so we're specifying both.
+     */
+    overflow-wrap: break-word;
+    word-break: break-all;
   }
 
   .indent {
@@ -149,39 +181,75 @@
     }
   }
 
+  .moved-row td {
+    &.moved-from, &.moved-to {
+      border-left-width: @moved-border-left-width;
+      border-left-style: solid;
+
+      pre {
+        padding-left: @linenum-padding-left - @moved-border-left-width;
+      }
+    }
+
+    &.moved-from {
+      border-left-color: @diff-moved-from-bg-color;
+    }
+
+    &.moved-to {
+      border-left-color: @diff-moved-to-bg-color;
+    }
+  }
+
   .moved-row th {
-    /* Compensate for the increased border. */
-    padding-right: (@linenum-padding-right - @moved-border-width / 2);
-  }
+    &.moved-from, &.moved-to {
+      border-right-width: @moved-border-right-width;
+      border-right-style: solid;
+      padding-right: @linenum-padding-right - @moved-border-right-width;
+    }
 
-  .moved-to {
-    border-left: @moved-border-width @diff-moved-to-bg-color solid !important;
+    &.moved-from {
+      border-right-color: @diff-moved-from-bg-color;
+    }
 
-    .moved-flag {
-      background-color: @diff-moved-to-bg-color !important;
+    &.moved-to {
+      border-right-color: @diff-moved-to-bg-color;
     }
   }
 
-  .moved-from {
-    border-left: @moved-border-width @diff-moved-from-bg-color solid !important;
+  .moved-to .moved-flag {
+    background-color: @diff-moved-to-bg-color !important;
+  }
 
-    .moved-flag {
-      background-color: @diff-moved-from-bg-color !important;
-    }
+  .moved-from .moved-flag {
+    background-color: @diff-moved-from-bg-color !important;
   }
 
   .moved-flag {
     background-color: inherit !important;
     display: inline-block;
     font-size: 7pt;
-    margin: -1px;
     padding: 0;
+
+    /*
+     * We need to compensate for some spacing in the cells. The TD for the
+     * cell is @diff-cell-padding around the sides, which is simple.
+     *
+     * We need to offset a bit more on the left to compensate for the border.
+     * Parent cells have different border colors and widths above and to the
+     * side, which creates a diagonal. This means there's what appears to be
+     * a gap between the moved range line and the flag. We cover that up by
+     * moving the flag over the left a bit.
+     */
+    margin: -@diff-cell-padding -@diff-cell-padding @diff-cell-padding
+            -(@diff-cell-padding + @moved-border-right-width);
   }
 
   .moved-to-start, .moved-from-start {
+    padding-top: 0;
+
     .moved-flag {
+      border-radius: 0, 8px, 8px, 0;
       padding: 3px 1em 3px 0.5em;
-      .border-radius(0, 8px, 8px, 0);
     }
   }
 
@@ -203,20 +271,15 @@
         }
       }
 
-      &.last {
-        td, th {
-          border-bottom: 1px @diff-line-border-color solid;
-        }
-      }
-
       &.highlight-anchor {
         td, th {
-            background: @diff-highlight-color;
+          background: @diff-highlight-color;
         }
       }
 
       td {
-        padding: 1px;
+        background: @diff-background-color;
+        padding: @diff-cell-padding;
         vertical-align: top;
 
         .collapse-floater {
@@ -261,22 +324,22 @@
 
         .unselectable();
       }
-
-      &.comment-divider td {
-        height: 1px;
-        padding: 0;
-        background-color: #666 !important;
-      }
     }
 
     &.whitespace-file td {
       background: @diff-replace-color;
+      border-bottom: 1px @diff-file-border-color solid;
       padding: 1em;
     }
 
     &.deleted td {
       background: @diff-delete-color;
       padding: 1em;
+
+      a {
+        color: #0000FF;
+        text-decoration: underline;
+      }
     }
 
     &.new-empty-file td {
@@ -304,7 +367,7 @@
 
       .inline-actions-right, .inline-actions-left {
         li {
-          .border-radius(0 0 0 0);
+          border-radius: 0;
 
           &:hover {
             background-color: @inline-actions-hover-bg;
@@ -360,52 +423,111 @@
     }
 
     &.delete {
+      /*
+       * Use the delete border colors for this chunk and for the top of the
+       * following chunk. The delete border is darker than the borders of other
+       * types of chunks, and contrasts much better with the delete background
+       * color, so we always want it used for the top of the next diff row.
+       */
+      & tr,
+      + tbody.equal tr.first,
+      + tbody.delete tr.first,
+      + tbody.insert tr.first,
+      + tbody.replace tr.first {
+        td {
+          border-color: @diff-delete-border-color;
+        }
+
+        th {
+          border-color: @diff-delete-linenum-border-color;
+        }
+      }
+
       tr {
         &.selected * { background: @diff-delete-selected-color; }
         &.highlight-anchor * { background: @diff-highlight-color; }
 
         td {
           background: @diff-delete-color;
-          border-color: @diff-delete-border-color;
         }
 
         th {
           background: @diff-delete-linenum-color;
-          border-color: @diff-delete-linenum-border-color;
+        }
+      }
+    }
+
+    &.equal {
+      /*
+       * Don't include a border for adjacent equals chunks. This will happen
+       * when expanding diffs, and is specific to equals.
+       */
+      + tbody.equal tr.first {
+        td, th {
+          border-top: 0;
         }
       }
     }
 
     &.insert {
+      /*
+       * Use the insert border colors for this chunk and the top of a
+       * following equal or replace chunks. The insert border color better
+       * contrasts with the green than the border colors of the equal or
+       * replace chunks. We don't want this for deletes.
+       */
+      & tr,
+      + tbody.equal tr.first,
+      + tbody.replace tr.first {
+        td {
+          border-color: @diff-insert-border-color;
+        }
+
+        th {
+          border-color: @diff-insert-linenum-border-color;
+        }
+      }
+
       tr {
         &.selected * { background: @diff-insert-selected-color; }
         &.highlight-anchor * { background: @diff-highlight-color; }
 
         td {
           background: @diff-insert-color;
-          border-color: @diff-insert-border-color;
         }
 
         th {
           background: @diff-insert-linenum-color;
-          border-color: @diff-insert-linenum-border-color;
         }
       }
     }
 
     &.replace {
+      /*
+       * Use the replace border colors for this chunk and the top of a
+       * following equal chunk.
+       */
+      & tr,
+      + tbody.equal tr.first {
+        td {
+          border-color: @diff-replace-border-color;
+        }
+
+        th {
+          border-color: @diff-replace-linenum-border-color;
+        }
+      }
+
       tr {
         &.selected * { background: @diff-replace-selected-color; }
         &.highlight-anchor * { background: @diff-highlight-color; }
 
         td {
           background: @diff-replace-color;
-          border-color: @diff-replace-border-color;
         }
 
         th {
           background: @diff-replace-linenum-color;
-          border-color: @diff-replace-linenum-border-color;
         }
       }
 
@@ -420,6 +542,12 @@
     }
 
     &.diff-header {
+      + tbody {
+        td, th {
+          border-top: 0;
+        }
+      }
+
       a {
         text-decoration: none;
         color: black;
@@ -446,17 +574,37 @@
 
       tr {
         &:first-child {
-          border-top: 1px darken(@diff-header-color, 10%) solid;
+          td, th {
+            border-top: 1px darken(@diff-header-color, 10%) solid;
+          }
         }
 
         &:last-child {
-          border-bottom: 1px darken(@diff-header-color, 10%) solid;
+          td, th {
+            border-bottom: 1px darken(@diff-header-color, 10%) solid;
+          }
         }
       }
     }
   }
 
   thead {
+    /*
+     * Remove the top border on the diff header or chunk following the file
+     * header, so that the file header's border takes precedence.
+     */
+    + tbody {
+      tr.first, tr:first-child {
+        td, th {
+          /*
+           * Ideally we wouldn't use !important, but we otherwise need to
+           * have this rule for each type of tbody, which we don't want.
+           */
+          border-top: 0 !important;
+        }
+      }
+    }
+
     th {
       background: @diff-file-color;
       font-size: 120%;
@@ -498,16 +646,16 @@
 }
 
 .commentflag {
-  .border-radius(@comment-flag-border-radius);
-  height: 20px;
+  border-radius: @comment-flag-border-radius;
+  display: none;
   left: -0.7em;
   margin-top: -0.3em;
   position: absolute;
   width: 1.6em;
 
   .commentflag-shadow {
-    .border-radius(@comment-flag-border-radius);
-    .opacity(10);
+    border-radius: @comment-flag-border-radius;
+    opacity: 0.1;
     background-color: black;
     border: 1px solid black;
     bottom: 0;
@@ -519,8 +667,8 @@
   }
 
   .commentflag-inner {
-    .border-radius(@comment-flag-border-radius);
-    .opacity(95);
+    border-radius: @comment-flag-border-radius;
+    opacity: 0.95;
     background-color: @comment-flag-color;
     border: 1px solid @comment-flag-border-color;
     bottom: 0.2em;
@@ -599,10 +747,10 @@
   }
 
   .diff-box {
-    .border-radius(@box-border-radius);
     border: 1px @diff-border-color solid;
+    border-radius: @box-border-radius;
+    box-shadow: @box-shadow;
     overflow: hidden;
-    .box-shadow(@box-shadow);
   }
 
   .diff-highlight {
@@ -621,7 +769,6 @@
   @icon-offset: 2px;
 
   border: 1px #BBB solid;
-  margin: 1em 0;
 
   table {
     padding: 0;
@@ -694,11 +841,11 @@
         text-align: right;
 
         a {
+          border-radius: 50%;
           display: inline-block;
           margin: 3px 2px 0 2px;
           width: 8px;
           height: 8px;
-          .border-radius(50%);
 
           &.insert {
             background-color: @diff-insert-dot-color;
@@ -752,11 +899,11 @@
 
 .revision-selector-grabbed,
 .revision-selector-grabbed * {
-  .grabbing-cursor-important;
+  cursor: grabbing !important;
 }
 
 .revision-selector {
-  margin: 3em 1.5em;
+  margin: 3em 1.5em 1.5em 1.5em;
   position: relative;
 
   .revision-selector-trough {
@@ -785,7 +932,7 @@
     position: absolute;
     top: -9px;
     z-index: 2;
-    .grab-cursor;
+    cursor: grab;
   }
 
   .revision-selector-range {

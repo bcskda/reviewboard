@@ -9,18 +9,20 @@ from django.utils import six
 from djblets.siteconfig.models import SiteConfiguration
 from djblets.webapi.testing.testcases import WebAPITestCaseMixin
 
-from reviewboard.notifications.tests import EmailTestHelper
+from reviewboard.notifications.tests.test_email_sending import EmailTestHelper
 from reviewboard.reviews.models import Review
 from reviewboard.testing import TestCase
 from reviewboard.webapi.tests.mimetypes import (
-    screenshot_comment_item_mimetype,
     error_mimetype,
     file_attachment_comment_item_mimetype,
-    review_diff_comment_item_mimetype)
+    general_comment_item_mimetype,
+    review_diff_comment_item_mimetype,
+    screenshot_comment_item_mimetype)
 from reviewboard.webapi.tests.urls import (
     get_review_diff_comment_list_url,
     get_review_file_attachment_comment_list_url,
-    get_screenshot_comment_list_url,
+    get_review_general_comment_list_url,
+    get_review_screenshot_comment_list_url,
     get_screenshot_list_url)
 
 
@@ -31,16 +33,14 @@ class BaseWebAPITestCase(WebAPITestCaseMixin, TestCase, EmailTestHelper):
         super(BaseWebAPITestCase, self).setUp()
 
         self.siteconfig = SiteConfiguration.objects.get_current()
-        self.siteconfig.set("mail_send_review_mail", False)
-        self.siteconfig.set("auth_require_sitewide_login", False)
-        self.siteconfig.save()
         self._saved_siteconfig_settings = self.siteconfig.settings.copy()
+        self.siteconfig.set('mail_send_review_mail', False)
+        self.siteconfig.set('auth_require_sitewide_login', False)
+        self.siteconfig.save()
 
-        mail.outbox = []
+        fixtures = getattr(self, 'fixtures', None)
 
-        fixtures = getattr(self, 'fixtures', [])
-
-        if 'test_users' in fixtures:
+        if fixtures and 'test_users' in fixtures:
             self.client.login(username="grumpy", password="grumpy")
             self.user = User.objects.get(username="grumpy")
 
@@ -51,9 +51,8 @@ class BaseWebAPITestCase(WebAPITestCaseMixin, TestCase, EmailTestHelper):
 
         self.client.logout()
 
-        if self.siteconfig.settings != self._saved_siteconfig_settings:
-            self.siteconfig.settings = self._saved_siteconfig_settings
-            self.siteconfig.save()
+        self.siteconfig.settings = self._saved_siteconfig_settings
+        self.siteconfig.save()
 
     def _testHttpCaching(self, url, check_etags=False,
                          check_last_modified=False):
@@ -170,7 +169,7 @@ class BaseWebAPITestCase(WebAPITestCaseMixin, TestCase, EmailTestHelper):
 
         review = Review.objects.get(pk=review_id)
         rsp = self.api_post(
-            get_screenshot_comment_list_url(review, local_site_name),
+            get_review_screenshot_comment_list_url(review, local_site_name),
             post_data,
             expected_mimetype=screenshot_comment_item_mimetype)
 
@@ -229,5 +228,38 @@ class BaseWebAPITestCase(WebAPITestCaseMixin, TestCase, EmailTestHelper):
 
         return rsp
 
-    def _getTrophyFilename(self):
-        return os.path.join(settings.STATIC_ROOT, "rb", "images", "trophy.png")
+    def _post_new_general_comment(self, review_request, review_id,
+                                  comment_text,
+                                  issue_opened=None,
+                                  issue_status=None):
+        """Creates a general comment.
+
+        This returns the response from the API call to create the comment.
+        """
+        if review_request.local_site:
+            local_site_name = review_request.local_site.name
+        else:
+            local_site_name = None
+
+        post_data = {
+            'text': comment_text,
+        }
+
+        if issue_opened is not None:
+            post_data['issue_opened'] = issue_opened
+
+        if issue_status is not None:
+            post_data['issue_status'] = issue_status
+
+        review = Review.objects.get(pk=review_id)
+        rsp = self.api_post(
+            get_review_general_comment_list_url(review, local_site_name),
+            post_data,
+            expected_mimetype=general_comment_item_mimetype)
+
+        self.assertEqual(rsp['stat'], 'ok')
+
+        return rsp
+
+    def get_sample_image_filename(self):
+        return os.path.join(settings.STATIC_ROOT, 'rb', 'images', 'logo.png')

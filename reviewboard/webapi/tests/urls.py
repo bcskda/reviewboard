@@ -82,6 +82,15 @@ def get_default_reviewer_item_url(default_reviewer_id, local_site_name=None):
 
 
 #
+# DiffContextResource
+#
+def get_diff_context_url(review_request_id, local_site_name=None):
+    return resources.diff_context.get_list_url(
+        review_request_id=review_request_id,
+        local_site_name=local_site_name)
+
+
+#
 # DiffResource
 #
 def get_diff_list_url(review_request, local_site_name=None):
@@ -272,6 +281,23 @@ def get_filediff_comment_item_url(filediff, comment_id, local_site_name=None):
 
 
 #
+# GeneralCommentResource
+#
+def get_general_comment_list_url(review_request, local_site_name=None):
+    return resources.base_review_general_comment.get_list_url(
+        local_site_name=local_site_name,
+        review_request_id=review_request.display_id)
+
+
+def get_general_comment_item_url(review_request, comment_id,
+                                 local_site_name=None):
+    return resources.base_review_general_comment.get_item_url(
+        local_site_name=local_site_name,
+        review_request_id=review_request.display_id,
+        comment_id=comment_id)
+
+
+#
 # HostingServiceResource
 #
 def get_hosting_service_list_url(local_site_name=None):
@@ -282,7 +308,7 @@ def get_hosting_service_list_url(local_site_name=None):
 def get_hosting_service_item_url(hosting_service_or_id, local_site_name=None):
     hosting_service_id = _normalize_id(hosting_service_or_id,
                                        HostingService,
-                                       id_field='id',
+                                       id_field='hosting_service_id',
                                        ischecker=issubclass)
 
     return resources.hosting_service.get_item_url(
@@ -304,6 +330,30 @@ def get_hosting_service_account_item_url(account_or_id, local_site_name=None):
     return resources.hosting_service_account.get_item_url(
         local_site_name=local_site_name,
         account_id=account_id)
+
+
+#
+# OAuthApplicationResource
+#
+def get_oauth_app_list_url(local_site_name=None):
+    return resources.oauth_app.get_list_url(local_site_name=local_site_name)
+
+
+def get_oauth_app_item_url(app_id, local_site_name=None):
+    return resources.oauth_app.get_item_url(local_site_name=local_site_name,
+                                            app_id=app_id)
+
+
+#
+# OAuthTokenResource
+#
+def get_oauth_token_list_url(local_site_name=None):
+    return resources.oauth_token.get_list_url(local_site_name=local_site_name)
+
+
+def get_oauth_token_item_url(token_id, local_site_name=None):
+    return resources.oauth_token.get_item_url(local_site_name=local_site_name,
+                                              oauth_token_id=token_id)
 
 
 #
@@ -443,6 +493,25 @@ def get_review_file_attachment_comment_item_url(review, comment_id,
 
 
 #
+# ReviewGeneralCommentResource
+#
+def get_review_general_comment_list_url(review, local_site_name=None):
+    return resources.review_general_comment.get_list_url(
+        local_site_name=local_site_name,
+        review_request_id=review.review_request.display_id,
+        review_id=review.pk)
+
+
+def get_review_general_comment_item_url(review, comment_id,
+                                        local_site_name=None):
+    return resources.review_general_comment.get_item_url(
+        local_site_name=local_site_name,
+        review_request_id=review.review_request.display_id,
+        review_id=review.pk,
+        comment_id=comment_id)
+
+
+#
 # ReviewGroupResource
 #
 def get_review_group_list_url(local_site_name=None):
@@ -460,13 +529,13 @@ def get_review_group_item_url(group_name, local_site_name=None):
 # ReviewGroupUserResource
 #
 def get_review_group_user_list_url(group_name, local_site_name=None):
-    return resources.user.get_list_url(
+    return resources.review_group_user.get_list_url(
         local_site_name=local_site_name,
         group_name=group_name)
 
 
 def get_review_group_user_item_url(group_name, username, local_site_name=None):
-    return resources.user.get_item_url(
+    return resources.review_group_user.get_item_url(
         local_site_name=local_site_name,
         group_name=group_name,
         username=username)
@@ -534,6 +603,27 @@ def get_review_reply_file_attachment_comment_item_url(reply, comment_id,
 
 
 #
+# ReviewReplyGeneralCommentResource
+#
+def get_review_reply_general_comment_list_url(reply, local_site_name=None):
+    return resources.review_reply_general_comment.get_list_url(
+        local_site_name=local_site_name,
+        review_request_id=reply.review_request.display_id,
+        review_id=reply.base_reply_to_id,
+        reply_id=reply.pk)
+
+
+def get_review_reply_general_comment_item_url(reply, comment_id,
+                                              local_site_name=None):
+    return resources.review_reply_general_comment.get_item_url(
+        local_site_name=local_site_name,
+        review_request_id=reply.review_request.display_id,
+        review_id=reply.base_reply_to_id,
+        reply_id=reply.pk,
+        comment_id=comment_id)
+
+
+#
 # ReviewReplyScreenshotCommentResource
 #
 def get_review_reply_screenshot_comment_list_url(reply, local_site_name=None):
@@ -573,6 +663,15 @@ def get_review_request_item_url(review_request_id, local_site_name=None):
 #
 def get_review_request_draft_url(review_request, local_site_name=None):
     return resources.review_request_draft.get_item_url(
+        local_site_name=local_site_name,
+        review_request_id=review_request.display_id)
+
+
+#
+# ReviewRequestLastUpdateResource
+#
+def get_review_request_last_update_url(review_request, local_site_name=None):
+    return resources.review_request_last_update.get_item_url(
         local_site_name=local_site_name,
         review_request_id=review_request.display_id)
 
@@ -660,6 +759,13 @@ def get_screenshot_draft_item_url(review_request, screenshot_id,
 
 
 #
+# SearchResource
+#
+def get_search_url(local_site_name=None):
+    return resources.search.get_item_url(local_site_name=local_site_name)
+
+
+#
 # ServerInfoResource
 #
 def get_server_info_url(local_site_name=None):
@@ -674,6 +780,23 @@ def get_session_url(local_site_name=None):
 
 
 #
+# StatusResource
+#
+def get_status_update_list_url(review_request, local_site_name=None):
+    return resources.status_update.get_list_url(
+        local_site_name=local_site_name,
+        review_request_id=review_request.display_id)
+
+
+def get_status_update_item_url(review_request, status_update_id,
+                               local_site_name=None):
+    return resources.status_update.get_item_url(
+        local_site_name=local_site_name,
+        review_request_id=review_request.display_id,
+        status_update_id=status_update_id)
+
+
+#
 # UserResource
 #
 def get_user_list_url(local_site_name=None):
@@ -685,6 +808,23 @@ def get_user_item_url(username, local_site_name=None):
     return resources.user.get_item_url(
         local_site_name=local_site_name,
         username=username)
+
+
+#
+# UserFileAttachmentResource
+#
+def get_user_file_attachment_list_url(user, local_site_name=None):
+    return resources.user_file_attachment.get_list_url(
+        local_site_name=local_site_name,
+        username=user.username)
+
+
+def get_user_file_attachment_item_url(user, file_attachment,
+                                      local_site_name=None):
+    return resources.user_file_attachment.get_item_url(
+        local_site_name=local_site_name,
+        username=user.username,
+        file_attachment_id=file_attachment.id)
 
 
 #

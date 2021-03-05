@@ -19,6 +19,8 @@ from reviewboard.scmtools.errors import (AuthenticationError,
                                          RepositoryNotFoundError,
                                          SCMError,
                                          UnverifiedCertificateError)
+from reviewboard.scmtools.svn.utils import (collapse_svn_keywords,
+                                            has_expanded_svn_keywords)
 from reviewboard.ssh import utils as sshutils
 
 
@@ -45,6 +47,7 @@ class SVNCertificateFailures:
 
 
 class SVNTool(SCMTool):
+    scmtool_id = 'subversion'
     name = "Subversion"
     supports_post_commit = True
     dependencies = {
@@ -157,9 +160,6 @@ class SVNTool(SCMTool):
     def get_file(self, path, revision=HEAD, **kwargs):
         return self.client.get_file(path, revision)
 
-    def get_keywords(self, path, revision=HEAD):
-        return self.client.get_keywords(path, revision)
-
     def get_branches(self):
         """Returns a list of branches.
 
@@ -205,10 +205,13 @@ class SVNTool(SCMTool):
 
     def get_commits(self, branch=None, start=None):
         """Return a list of commits."""
-        commits = self.client.get_log(branch or '/',
-                                      start=start,
-                                      limit=self.COMMITS_PAGE_LIMIT,
-                                      limit_to_path=False)
+        try:
+            commits = self.client.get_log(branch or '/',
+                                          start=start,
+                                          limit=self.COMMITS_PAGE_LIMIT,
+                                          limit_to_path=False)
+        except Exception as e:
+            raise self.normalize_error(e)
 
         results = []
 
@@ -268,11 +271,11 @@ class SVNTool(SCMTool):
         svn:keywords and then setting svn:keywords in the repository), RB
         won't be able to apply a patch to such file.
         """
-        if revision != PRE_CREATION:
-            keywords = self.get_keywords(filename, revision)
+        if revision != PRE_CREATION and has_expanded_svn_keywords(patch):
+            keywords = self.client.get_keywords(filename, revision)
 
             if keywords:
-                return self.client.collapse_keywords(patch, keywords)
+                return collapse_svn_keywords(patch, keywords)
 
         return patch
 
@@ -322,9 +325,6 @@ class SVNTool(SCMTool):
 
     def get_repository_info(self):
         return self.client.repository_info
-
-    def get_fields(self):
-        return ['basedir', 'diff_path']
 
     def get_parser(self, data):
         return SVNDiffParser(data)
@@ -506,10 +506,16 @@ class SVNDiffParser(DiffParser):
         # 3) Property changes on: <path>
         # 4) -----------------------------------------------------
         # 5) Modified: <propname>
-        if (linenum + 4 < len(self.lines) and
-            self.lines[linenum].startswith(b'--- (') and
-            self.lines[linenum + 1].startswith(b'+++ (') and
-            self.lines[linenum + 2].startswith(b'Property changes on:')):
+        try:
+            is_property_change = (
+                self.lines[linenum].startswith(b'--- (') and
+                self.lines[linenum + 1].startswith(b'+++ (') and
+                self.lines[linenum + 2].startswith(b'Property changes on:')
+            )
+        except IndexError:
+            is_property_change = False
+
+        if is_property_change:
             # Subversion diffs with property changes have no really
             # parsable format. The content of a property can easily mimic
             # the property change headers. So we can't rely upon it, and
@@ -521,8 +527,12 @@ class SVNDiffParser(DiffParser):
             return linenum
         else:
             # Handle deleted empty files.
-            if b'index' in info and info['index'].endswith(b'\t(deleted)'):
-                info['deleted'] = True
+            try:
+                if info['index'].endswith(b'\t(deleted)'):
+                    info['deleted'] = True
+            except KeyError:
+                # There's no index information.
+                pass
 
             return super(SVNDiffParser, self).parse_diff_header(linenum, info)
 
@@ -536,17 +546,27 @@ class SVNDiffParser(DiffParser):
         linenum = super(SVNDiffParser, self).parse_special_header(
             linenum, info)
 
-        if 'index' in info and linenum != len(self.lines):
+        try:
+            file_index = info['index']
+        except KeyError:
+            return linenum
+
+        try:
             if self.lines[linenum] == self.BINARY_STRING:
                 # Skip this and the svn:mime-type line.
                 linenum += 2
-                info['binary'] = True
-                info['origFile'] = info['index']
-                info['newFile'] = info['index']
 
-                # We can't get the revision info from this diff header.
-                info['origInfo'] = '(unknown)'
-                info['newInfo'] = '(working copy)'
+                info.update({
+                    'binary': True,
+                    'origFile': file_index,
+                    'newFile': file_index,
+
+                    # We can't get the revision info from this diff header.
+                    'origInfo': '(unknown)',
+                    'newInfo': '(working copy)',
+                })
+        except IndexError:
+            pass
 
         return linenum
 
@@ -562,13 +582,20 @@ class SVNDiffParser(DiffParser):
         # 2) There's an actual section per-property, so we could parse these
         #    out in a usable form. We'd still need a way to display that
         #    sanely, though.
-        if (self.lines[linenum] == b'' and
-            linenum + 2 < len(self.lines) and
-            self.lines[linenum + 1].startswith(b'Property changes on:')):
-            # Skip over the next 3 lines (blank, "Property changes on:", and
-            # the "__________" divider.
-            info['skip'] = True
-            linenum += 3
+        try:
+            if (self.lines[linenum] == b'' and
+                self.lines[linenum + 1].startswith(b'Property changes on:')):
+                # If we're working with binary files, we're going to leave
+                # the data here and not skip the entry. SVN diffs may include
+                # property changes as part of the binary file entry.
+                if not info.get('binary'):
+                    # Skip over the next 3 lines (blank, "Property changes
+                    # on:", and the "__________" divider.
+                    info['skip'] = True
+
+                linenum += 3
+        except IndexError:
+            pass
 
         return linenum
 

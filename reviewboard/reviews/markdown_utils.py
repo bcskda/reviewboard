@@ -2,6 +2,7 @@ from __future__ import unicode_literals
 
 import warnings
 
+import pymdownx.emoji
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Model
 from django.utils.html import escape
@@ -9,19 +10,42 @@ from djblets import markdown as djblets_markdown
 from djblets.siteconfig.models import SiteConfiguration
 from markdown import markdown
 
+from reviewboard.deprecation import RemovedInReviewBoard40Warning
+
 
 # Keyword arguments used when calling a Markdown renderer function.
+#
+# We use XHTML1 instead of HTML5 to ensure the results can be parsed by an
+# XML parser, needed for change descriptions and other parts of the web UI.
 MARKDOWN_KWARGS = {
-    'safe_mode': 'escape',
+    'enable_attributes': False,
     'output_format': 'xhtml1',
     'lazy_ol': False,
     'extensions': [
-        'fenced_code', 'codehilite', 'sane_lists', 'smart_strong', 'nl2br',
+        'markdown.extensions.fenced_code',
+        'markdown.extensions.codehilite',
+        'markdown.extensions.sane_lists',
+        'markdown.extensions.smart_strong',
+        'markdown.extensions.tables',
+        'markdown.extensions.nl2br',
+        'pymdownx.tilde',
+        'pymdownx.emoji',
+        'djblets.markdown.extensions.escape_html',
         'djblets.markdown.extensions.wysiwyg',
     ],
     'extension_configs': {
-        'codehilite': {
+        'markdown.extensions.codehilite': {
             'guess_lang': False,
+        },
+        'pymdownx.emoji': {
+            'emoji_index': pymdownx.emoji.gemoji,
+            'options': {
+                'classes': 'emoji',
+                'image_path': ('https://github.githubassets.com/images/icons/'
+                               'emoji/unicode/'),
+                'non_standard_image_path': ('https://github.githubassets.com/'
+                                            'images/icons/emoji/'),
+            },
         },
     },
 }
@@ -37,7 +61,7 @@ def markdown_escape(text):
     """
     warnings.warn('reviewboard.reviews.markdown_utils.markdown_escape is '
                   'deprecated. Please use djblets.markdown.markdown_escape.',
-                  DeprecationWarning)
+                  RemovedInReviewBoard40Warning)
 
     return djblets_markdown.markdown_escape(text)
 
@@ -52,7 +76,7 @@ def markdown_unescape(escaped_text):
     """
     warnings.warn('reviewboard.reviews.markdown_utils.markdown_unescape is '
                   'deprecated. Please use djblets.markdown.markdown_unescape.',
-                  DeprecationWarning)
+                  RemovedInReviewBoard40Warning)
 
     return djblets_markdown.markdown_unescape(escaped_text)
 
@@ -158,7 +182,7 @@ def iter_markdown_lines(markdown_html):
     warnings.warn(
         'reviewboard.reviews.markdown_utils.iter_markdown_lines is '
         'deprecated. Please use djblets.markdown.iter_markdown_lines.',
-        DeprecationWarning)
+        RemovedInReviewBoard40Warning)
 
     return djblets_markdown.iter_markdown_lines(markdown_html)
 
@@ -175,7 +199,7 @@ def get_markdown_element_tree(markdown_html):
     warnings.warn(
         'reviewboard.reviews.markdown_utils.get_markdown_element_tree is '
         'deprecated. Please use djblets.markdown.get_markdown_element_tree.',
-        DeprecationWarning)
+        RemovedInReviewBoard40Warning)
 
     return djblets_markdown.get_markdown_element_tree(markdown_html)
 
@@ -196,7 +220,7 @@ def sanitize_illegal_chars_for_xml(s):
         'reviewboard.reviews.markdown_utils.sanitize_illegal_chars_for_xml '
         'is deprecated. Please use '
         'djblets.markdown.sanitize_illegal_chars_for_xml.',
-        DeprecationWarning)
+        RemovedInReviewBoard40Warning)
 
     return djblets_markdown.sanitize_illegal_chars_for_xml(s)
 

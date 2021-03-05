@@ -6,7 +6,11 @@ import os
 from datetime import datetime
 
 try:
-    from subvertpy import ra, SubversionException, __version__
+    from subvertpy import (AUTH_PARAM_DEFAULT_PASSWORD,
+                           AUTH_PARAM_DEFAULT_USERNAME,
+                           ra,
+                           SubversionException,
+                           __version__)
     from subvertpy.client import Client as SVNClient, api_version, get_config
 
     has_svn_backend = (__version__ >= (0, 9, 1))
@@ -23,6 +27,9 @@ from django.utils.translation import ugettext as _
 from reviewboard.scmtools.core import Revision, HEAD, PRE_CREATION
 from reviewboard.scmtools.errors import FileNotFoundError, SCMError
 from reviewboard.scmtools.svn import base, SVNTool
+from reviewboard.scmtools.svn.utils import (collapse_svn_keywords,
+                                            has_expanded_svn_keywords)
+
 
 B = six.binary_type
 DIFF_UNIFIED = [B('-u')]
@@ -53,12 +60,18 @@ class Client(base.Client):
             ]
 
         self.auth = ra.Auth(auth_providers)
+        self.username = None
+        self.password = None
 
         if username:
-            self.auth.set_parameter(B('svn:auth:username'), B(username))
+            self.username = username
+            self.auth.set_parameter(AUTH_PARAM_DEFAULT_USERNAME,
+                                    B(self.username))
 
         if password:
-            self.auth.set_parameter(B('svn:auth:password'), B(password))
+            self.password = password
+            self.auth.set_parameter(AUTH_PARAM_DEFAULT_PASSWORD,
+                                    B(self.password))
 
         cfg = get_config(self.config_dir)
         self.client = SVNClient(cfg, auth=self.auth)
@@ -70,17 +83,24 @@ class Client(base.Client):
         """Returns the contents of a given file at the given revision."""
         if not path:
             raise FileNotFoundError(path, revision)
+
         revnum = self._normalize_revision(revision)
         path = B(self.normalize_path(path))
         data = six.StringIO()
+
         try:
             self.client.cat(path, data, revnum)
         except SubversionException as e:
             raise FileNotFoundError(e)
+
         contents = data.getvalue()
-        keywords = self.get_keywords(path, revision)
-        if keywords:
-            contents = self.collapse_keywords(contents, keywords)
+
+        if has_expanded_svn_keywords(contents):
+            keywords = self.get_keywords(path, revision)
+
+            if keywords:
+                contents = collapse_svn_keywords(contents, keywords)
+
         return contents
 
     def get_keywords(self, path, revision=HEAD):
@@ -187,6 +207,13 @@ class Client(base.Client):
             ra.get_ssl_server_trust_file_provider(),
             ra.get_ssl_server_trust_prompt_provider(_accept_trust_prompt),
         ])
+
+        if self.username:
+            auth.set_parameter(AUTH_PARAM_DEFAULT_USERNAME, B(self.username))
+
+        if self.password:
+            auth.set_parameter(AUTH_PARAM_DEFAULT_PASSWORD, B(self.password))
+
         cfg = get_config(self.config_dir)
         client = SVNClient(cfg, auth)
 

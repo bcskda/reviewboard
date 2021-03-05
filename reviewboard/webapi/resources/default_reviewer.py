@@ -126,28 +126,32 @@ class DefaultReviewerResource(WebAPIResource):
         return default_reviewer.is_mutable_by(request.user)
 
     @webapi_check_local_site
+    @webapi_request_fields(optional={
+        'groups': {
+            'type': six.text_type,
+            'description': 'A comma-separated list of group names that each '
+                           'resulting default reviewer must apply to review '
+                           'requests.',
+        },
+        'repositories': {
+            'type': six.text_type,
+            'description': 'A comma-separated list of IDs of repositories '
+                           'that each resulting default reviewer must match '
+                           'against.'
+        },
+        'users': {
+            'type': six.text_type,
+            'description': 'A comma-separated list of usernames that each '
+                           'resulting default reviewer must apply to review '
+                           'requests.',
+        },
+    })
     @augment_method_from(WebAPIResource)
     def get_list(self, request, *args, **kwargs):
         """Retrieves the list of default reviewers on the server.
 
         By default, this lists all default reviewers. This list can be
-        further filtered down by one or more of the following arguments
-        in the URL:
-
-          * ``repositories``
-              - A comma-separated list of IDs of repositories that the default
-                reviewer matches against. Only default reviewers that match
-                every specified repository will be returned.
-
-          * ``users``
-              - A comma-separated list of usernames that the default reviewer
-                applies. Only default reviewers that apply each of these users
-                will be returned.
-
-          * ``groups``
-              - A comma-separated list of group names that the default reviewer
-                applies. Only default reviewers that apply each of these groups
-                will be returned.
+        further filtered down through the query arguments.
         """
         pass
 
@@ -198,7 +202,7 @@ class DefaultReviewerResource(WebAPIResource):
         if not self.model.objects.can_create(request.user, local_site):
             return self.get_no_access_error(request)
 
-        code, data = self._create_or_update(local_site, **kwargs)
+        code, data = self._create_or_update(request, local_site, **kwargs)
 
         if code == 200:
             return 201, data
@@ -249,14 +253,23 @@ class DefaultReviewerResource(WebAPIResource):
         if not self.has_modify_permissions(request, default_reviewer):
             return self.get_no_access_error(request)
 
-        return self._create_or_update(local_site, default_reviewer, **kwargs)
+        return self._create_or_update(request, local_site, default_reviewer,
+                                      **kwargs)
 
-    def _create_or_update(self, local_site, default_reviewer=None, **kwargs):
+    def _create_or_update(self, request, local_site, default_reviewer=None,
+                          **kwargs):
         invalid_fields = {}
         form_data = {}
 
         if 'groups' in kwargs:
-            group_names = kwargs['groups'].split(',')
+            group_names = [
+                name
+                for name in (
+                    name.strip()
+                    for name in kwargs['groups'].split(',')
+                )
+                if name
+            ]
             group_ids = [
                 group['pk']
                 for group in Group.objects.filter(
@@ -276,7 +289,11 @@ class DefaultReviewerResource(WebAPIResource):
             try:
                 repo_ids = [
                     int(repo_id)
-                    for repo_id in kwargs['repositories'].split(',')
+                    for repo_id in (
+                        repo_id.strip()
+                        for repo_id in kwargs['repositories'].split(',')
+                    )
+                    if repo_id
                 ]
             except ValueError:
                 invalid_fields['repositories'] = [
@@ -295,7 +312,14 @@ class DefaultReviewerResource(WebAPIResource):
             form_data['repository'] = repo_ids
 
         if 'users' in kwargs:
-            usernames = kwargs['users'].split(',')
+            usernames = [
+                name
+                for name in (
+                    name.strip()
+                    for name in kwargs['users'].split(',')
+                )
+                if name
+            ]
 
             user_ids = [
                 user['pk']
@@ -319,10 +343,10 @@ class DefaultReviewerResource(WebAPIResource):
             if field in kwargs:
                 form_data[field] = kwargs[field]
 
-        if local_site:
-            form_data['local_site'] = local_site.pk
-
-        form = DefaultReviewerForm(form_data, instance=default_reviewer)
+        form = DefaultReviewerForm(data=form_data,
+                                   instance=default_reviewer,
+                                   limit_to_local_site=local_site,
+                                   request=request)
 
         if not form.is_valid():
             # The form uses "people" and "repository", but we expose these

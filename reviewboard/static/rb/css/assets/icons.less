@@ -1,4 +1,4 @@
-@import (reference) "../mixins/retina.less";
+@import (reference) "djblets/css/mixins/retina.less";
 
 
 @img_base: '../../images';
@@ -11,8 +11,7 @@
   text-indent: -99999px;
   vertical-align: middle;
 
-  background-image: url("@{img_base}/icons.png");
-  .at2x('@{img_base}/icons.png', 155px, 125px);
+  .retina('@{img_base}/icons.png', 155px 125px, @has-svg: true);
 
   // For IE7
   zoom: 1;
@@ -36,12 +35,13 @@
 .icon(collapse-review, 68px, 5px, 18px, 18px);
 .icon(expand-review, 91px, 5px, 18px, 18px);
 .icon(collapse, 114px, 5px, 14px, 14px);
-.icon(expand, 5px, 28px, 14px, 14px);
+.icon(expand, 135px, 5px, 14px, 14px);
+.icon(dropdown-arrow, 8px, 33px, 8px, 8px);
 .icon(datagrid-comment-draft, 24px, 28px);
 .icon(datagrid-comment-shipit, 45px, 28px);
 .icon(datagrid-comment, 66px, 28px);
-.icon(shipit-checkmark, 87px, 28px, 9px, 10px);
-.icon(datagrid-new-updates, 101px, 28px, 18px, 16px);
+.icon(datagrid-shipit, 87px, 28px, 10px, 12px);
+.icon(new-updates, 102px, 29px, 15px, 15px);
 .icon(edit, 124px, 28px, 20px, 16px);
 .icon(delete, 5px, 49px, 12px, 12px);
 .icon(diff-collapse-chunk, 22px, 49px, 14px, 14px);
@@ -49,7 +49,6 @@
 .icon(diff-expand-all, 74px, 49px, 14px, 14px);
 .icon(diff-expand-below, 93px, 49px, 28px, 14px);
 .icon(diff-expand-header, 126px, 49px, 14px, 14px);
-.icon(shipit, 5px, 68px);
 .icon(admin-enabled, 5px, 68px);
 .icon(admin-disabled, 26px, 68px);
 .icon(admin-add, 47px, 68px);
@@ -63,7 +62,11 @@
 .icon(jump-to, 76px, 86px, 21px, 18px);
 .icon(range-slider, 100px, 87px, 9px, 18px);
 .icon(download, 114px, 90px, 14px, 14px);
-.icon(archive-off, 6px, 108px);
-.icon(archive-on, 26px, 108px);
-// Placeholder variable for new icon
 .icon(remove-widget, 130px, 89px, 13px, 13px);
+.icon(archive-off, 6px, 106px);
+.icon(archive-on, 26px, 106px);
+.icon(datagrid-open-issues, 47px, 108px, 8px, 11px);
+.icon(datagrid-column-shipits-issues, 59px, 107px, 35px, 16px);
+.icon(shipit, 99px, 107px, 12px, 15px);
+.icon(issue-verifying, 117px, 107px);
+.icon(datagrid-issue-verifying, 139px, 108px, 11px, 14px);

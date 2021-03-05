@@ -3,7 +3,7 @@ from __future__ import unicode_literals
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.http import Http404
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404, render
 from django.utils.translation import ugettext_lazy as _
 
 from reviewboard.accounts.decorators import (check_login_required,
@@ -15,13 +15,32 @@ from reviewboard.datagrids.grids import (DashboardDataGrid,
                                          UserPageReviewsDataGrid,
                                          UserPageReviewRequestDataGrid)
 from reviewboard.reviews.models import Group, ReviewRequest
-from reviewboard.reviews.views import _render_permission_denied
 from reviewboard.site.decorators import check_local_site_access
 from reviewboard.site.urlresolvers import local_site_reverse
 
 
+def _is_datagrid_gridonly(request):
+    """Return whether or not the current request is for an embedded datagrid.
+
+    This method allows us to disable consent checks in
+    :py:func:`~reviewboard.accounts.decorators.valid_prefs_required` when a
+    datagrid is requesting updated data so that we do not return a redirect
+    and embed the result of that redirect in the datagrid instead.
+
+    Args:
+        request (django.http.HttpRequest):
+            The HTTP request from the client.
+
+    Returns:
+        bool:
+        Whether or not this request is for an embedded datagrid.
+    """
+    return 'gridonly' in request.GET
+
+
 @check_login_required
 @check_local_site_access
+@valid_prefs_required(disable_consent_checks=_is_datagrid_gridonly)
 def all_review_requests(request,
                         local_site=None,
                         template_name='datagrids/datagrid.html'):
@@ -40,7 +59,7 @@ def all_review_requests(request,
 
 @login_required
 @check_local_site_access
-@valid_prefs_required
+@valid_prefs_required(disable_consent_checks=_is_datagrid_gridonly)
 def dashboard(request,
               template_name='datagrids/dashboard.html',
               local_site=None):
@@ -64,6 +83,7 @@ def dashboard(request,
 
 @check_login_required
 @check_local_site_access
+@valid_prefs_required(disable_consent_checks=_is_datagrid_gridonly)
 def group(request,
           name,
           template_name='datagrids/datagrid.html',
@@ -73,8 +93,8 @@ def group(request,
     group = get_object_or_404(Group, name=name, local_site=local_site)
 
     if not group.is_accessible_by(request.user):
-        return _render_permission_denied(
-            request, 'datagrids/group_permission_denied.html')
+        return render(request, 'datagrids/group_permission_denied.html',
+                      status=403)
 
     datagrid = ReviewRequestDataGrid(
         request,
@@ -91,6 +111,7 @@ def group(request,
 
 @check_login_required
 @check_local_site_access
+@valid_prefs_required(disable_consent_checks=_is_datagrid_gridonly)
 def group_list(request,
                local_site=None,
                template_name='datagrids/datagrid.html'):
@@ -101,6 +122,7 @@ def group_list(request,
 
 @check_login_required
 @check_local_site_access
+@valid_prefs_required(disable_consent_checks=_is_datagrid_gridonly)
 def group_members(request,
                   name,
                   template_name='datagrids/datagrid.html',
@@ -112,8 +134,8 @@ def group_members(request,
                               local_site=local_site)
 
     if not group.is_accessible_by(request.user):
-        return _render_permission_denied(
-            request, 'datagrids/group_permission_denied.html')
+        return render(request, 'datagrids/group_permission_denied.html',
+                      status=403)
 
     datagrid = UsersDataGrid(request,
                              group.users.filter(is_active=True),
@@ -124,6 +146,7 @@ def group_members(request,
 
 @check_login_required
 @check_local_site_access
+@valid_prefs_required(disable_consent_checks=_is_datagrid_gridonly)
 def submitter(request,
               username,
               grid=None,
@@ -168,6 +191,7 @@ def submitter(request,
 
 @check_login_required
 @check_local_site_access
+@valid_prefs_required(disable_consent_checks=_is_datagrid_gridonly)
 def users_list(request,
                local_site=None,
                template_name='datagrids/datagrid.html'):

@@ -9,8 +9,8 @@ from time import time
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured, ValidationError
-from django.db import models
-from django.db import IntegrityError
+from django.db import IntegrityError, models
+from django.db.models import Q
 from django.utils import six, timezone
 from django.utils.encoding import python_2_unicode_compatible
 from django.utils.functional import cached_property
@@ -21,6 +21,7 @@ from djblets.cache.backend import cache_memoize, make_cache_key
 from djblets.db.fields import JSONField
 from djblets.log import log_timed
 
+from reviewboard.deprecation import RemovedInReviewBoard40Warning
 from reviewboard.hostingsvcs.models import HostingServiceAccount
 from reviewboard.hostingsvcs.service import get_hosting_service
 from reviewboard.scmtools.crypto_utils import (decrypt_password,
@@ -51,6 +52,15 @@ class Tool(models.Model):
     field_help_text = property(
         lambda x: x.scmtool_class.field_help_text)
 
+    @property
+    def scmtool_id(self):
+        """The unique ID for the SCMTool.
+
+        Type:
+            unicode
+        """
+        return self.scmtool_class.scmtool_id
+
     def __str__(self):
         return self.name
 
@@ -78,26 +88,23 @@ class Tool(models.Model):
     scmtool_class = property(get_scmtool_class)
 
     class Meta:
-        ordering = ("name",)
+        db_table = 'scmtools_tool'
+        ordering = ('name',)
+        verbose_name = _('Tool')
+        verbose_name_plural = _('Tools')
 
 
 @python_2_unicode_compatible
 class Repository(models.Model):
     ENCRYPTED_PASSWORD_PREFIX = '\t'
 
-    name = models.CharField(max_length=64)
-    path = models.CharField(max_length=255)
+    name = models.CharField(_('Name'), max_length=255)
+    path = models.CharField(_('Path'), max_length=255)
     mirror_path = models.CharField(max_length=255, blank=True)
     raw_file_url = models.CharField(
         _('Raw file URL mask'),
         max_length=255,
-        blank=True,
-        help_text=_("A URL mask used to check out a particular revision of a "
-                    "file using HTTP. This is needed for repository types "
-                    "that can't access remote files natively. "
-                    "Use <tt>&lt;revision&gt;</tt> and "
-                    "<tt>&lt;filename&gt;</tt> in the URL in place of the "
-                    "revision and filename parts of the path."))
+        blank=True)
     username = models.CharField(max_length=32, blank=True)
     encrypted_password = models.CharField(max_length=128, blank=True,
                                           db_column='password')
@@ -180,6 +187,9 @@ class Repository(models.Model):
     COMMITS_CACHE_PERIOD_SHORT = 60 * 5  # 5 minutes
     COMMITS_CACHE_PERIOD_LONG = 60 * 60 * 24  # 1 day
 
+    NAME_CONFLICT_ERROR = _('A repository with this name already exists')
+    PATH_CONFLICT_ERROR = _('A repository with this path already exists')
+
     def _set_password(self, value):
         """Sets the password for the repository.
 
@@ -189,7 +199,7 @@ class Repository(models.Model):
         """
         if value:
             value = '%s%s' % (self.ENCRYPTED_PASSWORD_PREFIX,
-                              encrypt_password(value))
+                              encrypt_password(value.encode('utf-8')))
         else:
             value = ''
 
@@ -214,7 +224,7 @@ class Repository(models.Model):
             password = password[len(self.ENCRYPTED_PASSWORD_PREFIX):]
 
             if password:
-                password = decrypt_password(password)
+                password = decrypt_password(password).decode('utf-8')
             else:
                 password = None
         else:
@@ -226,9 +236,22 @@ class Repository(models.Model):
 
     password = property(_get_password, _set_password)
 
+    @property
+    def scmtool_class(self):
+        """The SCMTool subclass used for this repository."""
+        if self.tool_id is not None:
+            return self.tool.get_scmtool_class()
+
+        return None
+
     def get_scmtool(self):
-        cls = self.tool.get_scmtool_class()
-        return cls(self)
+        """Return an instance of the SCMTool for this repository.
+
+        Returns:
+            reviewboard.scmtools.core.SCMTool:
+            A new instance of the SCMTool for this repository.
+        """
+        return self.scmtool_class(self)
 
     @cached_property
     def hosting_service(self):
@@ -257,16 +280,48 @@ class Repository(models.Model):
     def supports_post_commit(self):
         """Whether or not this repository supports post-commit creation.
 
-        If this is True, the get_branches and get_commits methods will be
-        implemented to fetch information about the committed revisions, and
-        get_change will be implemented to fetch the actual diff. This is used
-        by ReviewRequest.update_from_commit_id.
+        If this is ``True``, the :py:meth:`get_branches` and
+        :py:meth:`get_commits` methods will be implemented to fetch information
+        about the committed revisions, and get_change will be implemented to
+        fetch the actual diff. This is used by
+        :py:meth:`ReviewRequestDraft.update_from_commit_id
+        <reviewboard.reviews.models.ReviewRequestDraft.update_from_commit_id>`.
         """
         hosting_service = self.hosting_service
+
         if hosting_service:
             return hosting_service.supports_post_commit
         else:
-            return self.get_scmtool().supports_post_commit
+            return self.scmtool_class.supports_post_commit
+
+    @property
+    def supports_pending_changesets(self):
+        """Whether this repository supports server-aware pending changesets."""
+        return self.scmtool_class.supports_pending_changesets
+
+    @property
+    def diffs_use_absolute_paths(self):
+        """Whether or not diffs for this repository contain absolute paths.
+
+        Some types of source code management systems generate diffs that
+        contain paths relative to the directory where the diff was generated.
+        Most contain absolute paths. This flag indicates which path format
+        this repository can expect.
+        """
+        # Ideally, we won't have to instantiate the class, as that can end up
+        # performing some expensive calls or HTTP requests.  If the SCMTool is
+        # modern (doesn't define a get_diffs_use_absolute_paths), it will have
+        # all the information we need on the class. If not, we might have to
+        # instantiate it, but do this as a last resort.
+        scmtool_cls = self.scmtool_class
+
+        if isinstance(scmtool_cls.diffs_use_absolute_paths, bool):
+            return scmtool_cls.diffs_use_absolute_paths
+        elif hasattr(scmtool_cls, 'get_diffs_use_absolute_paths'):
+            # This will trigger a deprecation warning.
+            return self.get_scmtool().diffs_use_absolute_paths
+        else:
+            return False
 
     def get_credentials(self):
         """Returns the credentials for this repository.
@@ -317,7 +372,7 @@ class Repository(models.Model):
         return self.hooks_uuid
 
     def archive(self, save=True):
-        """Archives a repository.
+        """Archive a repository.
 
         The repository won't appear in any public lists of repositories,
         and won't be used when looking up repositories. Review requests
@@ -325,17 +380,27 @@ class Repository(models.Model):
 
         New repositories can be created with the same information as the
         archived repository.
+
+        Args:
+            save (bool, optional):
+                Whether to save the repository immediately.
         """
         # This should be sufficiently unlikely to create duplicates. time()
         # will use up a max of 8 characters, so we slice the name down to
         # make the result fit in 64 characters
-        self.name = 'ar:%s:%x' % (self.name[:50], int(time()))
+        max_name_len = self._meta.get_field('name').max_length
+        encoded_time = '%x' % int(time())
+        reserved_len = len('ar::') + len(encoded_time)
+
+        self.name = 'ar:%s:%s' % (self.name[:max_name_len - reserved_len],
+                                  encoded_time)
         self.archived = True
         self.public = False
         self.archived_timestamp = timezone.now()
 
         if save:
-            self.save()
+            self.save(update_fields=('name', 'archived', 'public',
+                                     'archived_timestamp'))
 
     def get_file(self, path, revision, base_commit_id=None, request=None):
         """Returns a file from the repository.
@@ -451,6 +516,42 @@ class Repository(models.Model):
         else:
             return self.get_scmtool().get_change(revision)
 
+    def normalize_patch(self, patch, filename, revision):
+        """Normalize a diff/patch file before it's applied.
+
+        This can be used to take an uploaded diff file and modify it so that
+        it can be properly applied. This may, for instance, uncollapse
+        keywords or remove metadata that would confuse :command:`patch`.
+
+        This passes the request on to the hosting service or repository
+        tool backend.
+
+        Args:
+            patch (bytes):
+                The diff/patch file to normalize.
+
+            filename (unicode):
+                The name of the file being changed in the diff.
+
+            revision (unicode):
+                The revision of the file being changed in the diff.
+
+        Returns:
+            bytes:
+            The resulting diff/patch file.
+        """
+        hosting_service = self.hosting_service
+
+        if hosting_service:
+            return hosting_service.normalize_patch(repository=self,
+                                                   patch=patch,
+                                                   filename=filename,
+                                                   revision=revision)
+        else:
+            return self.get_scmtool().normalize_patch(patch=patch,
+                                                      filename=filename,
+                                                      revision=revision)
+
     def is_accessible_by(self, user):
         """Returns whether or not the user has access to the repository.
 
@@ -464,8 +565,8 @@ class Repository(models.Model):
         return (self.public or
                 user.is_superuser or
                 (user.is_authenticated() and
-                 (self.review_groups.filter(users__pk=user.pk).count() > 0 or
-                  self.users.filter(pk=user.pk).count() > 0)))
+                 (self.review_groups.filter(users__pk=user.pk).exists() or
+                  self.users.filter(pk=user.pk).exists())))
 
     def is_mutable_by(self, user):
         """Returns whether or not the user can modify or delete the repository.
@@ -545,7 +646,8 @@ class Repository(models.Model):
             if argspec.keywords is None:
                 warnings.warn('SCMTool.get_file() must take keyword '
                               'arguments, signature for %s is deprecated.'
-                              % tool.name, DeprecationWarning)
+                              % tool.name,
+                              RemovedInReviewBoard40Warning)
                 data = tool.get_file(path, revision)
             else:
                 data = tool.get_file(path, revision,
@@ -602,7 +704,8 @@ class Repository(models.Model):
                 if argspec.keywords is None:
                     warnings.warn('SCMTool.file_exists() must take keyword '
                                   'arguments, signature for %s is deprecated.'
-                                  % tool.name, DeprecationWarning)
+                                  % tool.name,
+                                  RemovedInReviewBoard40Warning)
                     exists = tool.file_exists(path, revision)
                 else:
                     exists = tool.file_exists(path, revision,
@@ -634,24 +737,46 @@ class Repository(models.Model):
         aren't checked properly if one of the relations is null. This means
         that users who aren't using local sites could create multiple groups
         with the same name.
+
+        Raises:
+            django.core.exceptions.ValidationError:
+                Validation of the model's data failed. Details are in the
+                exception.
         """
         super(Repository, self).clean()
 
         if self.local_site is None:
-            q = Repository.objects.exclude(pk=self.pk)
+            existing_repos = (
+                Repository.objects
+                .exclude(pk=self.pk)
+                .filter(Q(name=self.name) |
+                        (Q(archived=False) &
+                         Q(path=self.path)))
+                .values('name', 'path')
+            )
 
-            if q.filter(name=self.name).exists():
-                raise ValidationError(
-                    _('A repository with this name already exists'),
-                    params={'field': 'name'})
+            errors = {}
 
-            if q.filter(path=self.path).exists():
-                raise ValidationError(
-                    _('A repository with this path already exists'),
-                    params={'field': 'path'})
+            for repo_info in existing_repos:
+                if repo_info['name'] == self.name:
+                    errors['name'] = [
+                        ValidationError(self.NAME_CONFLICT_ERROR,
+                                        code='repository_name_exists'),
+                    ]
+
+                if repo_info['path'] == self.path:
+                    errors['path'] = [
+                        ValidationError(self.PATH_CONFLICT_ERROR,
+                                        code='repository_path_exists'),
+                    ]
+
+            if errors:
+                raise ValidationError(errors)
 
     class Meta:
-        verbose_name_plural = "Repositories"
+        db_table = 'scmtools_repository'
         unique_together = (('name', 'local_site'),
                            ('archived_timestamp', 'path', 'local_site'),
                            ('hooks_uuid', 'local_site'))
+        verbose_name = _('Repository')
+        verbose_name_plural = _('Repositories')

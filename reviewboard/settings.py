@@ -4,14 +4,18 @@ from __future__ import unicode_literals
 
 import os
 import re
-import sys
 
 import djblets
 from django.core.urlresolvers import reverse
 
+from reviewboard.dependencies import (dependency_error,
+                                      fail_if_missing_dependencies)
+from reviewboard.staticbundles import PIPELINE_STYLESHEETS, PIPELINE_JAVASCRIPT
+
 
 # Can't import django.utils.translation yet
-_ = lambda s: s
+def _(s):
+    return s
 
 
 DEBUG = True
@@ -45,27 +49,24 @@ SITE_ID = 1
 # The prefix for e-mail subjects sent to administrators.
 EMAIL_SUBJECT_PREFIX = "[Review Board] "
 
+# Default name of the service used in From e-mail when not spoofing.
+#
+# This should generally not be overridden unless one needs to thoroughly
+# distinguish between two different Review Board servers AND DMARC is causing
+# issues for e-mails.
+EMAIL_DEFAULT_SENDER_SERVICE_NAME = 'Review Board'
+
 # If you set this to False, Django will make some optimizations so as not
 # to load the internationalization machinery.
 USE_I18N = True
-
-# List of callables that know how to import templates from various sources.
-TEMPLATE_LOADERS = (
-    ('djblets.template.loaders.conditional_cached.Loader', (
-        'django.template.loaders.filesystem.Loader',
-        'djblets.template.loaders.namespaced_app_dirs.Loader',
-        'djblets.extensions.loaders.load_template_source',
-    )),
-)
 
 MIDDLEWARE_CLASSES = [
     # Keep these first, in order
     'django.middleware.gzip.GZipMiddleware',
     'reviewboard.admin.middleware.InitReviewBoardMiddleware',
-
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.doc.XViewMiddleware',
     'django.middleware.http.ConditionalGetMiddleware',
     'django.middleware.locale.LocaleMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -77,10 +78,12 @@ MIDDLEWARE_CLASSES = [
     'reviewboard.admin.middleware.LoadSettingsMiddleware',
 
     'djblets.extensions.middleware.ExtensionsMiddleware',
+    'djblets.integrations.middleware.IntegrationsMiddleware',
     'djblets.log.middleware.LoggingMiddleware',
     'reviewboard.accounts.middleware.TimezoneMiddleware',
+    'reviewboard.accounts.middleware.UpdateLastLoginMiddleware',
     'reviewboard.admin.middleware.CheckUpdatesRequiredMiddleware',
-    'reviewboard.admin.middleware.X509AuthMiddleware',
+    'reviewboard.accounts.middleware.X509AuthMiddleware',
     'reviewboard.site.middleware.LocalSiteMiddleware',
 
     # Keep this second to last so that everything is initialized before
@@ -93,25 +96,6 @@ MIDDLEWARE_CLASSES = [
 ]
 RB_EXTRA_MIDDLEWARE_CLASSES = []
 
-TEMPLATE_CONTEXT_PROCESSORS = (
-    'django.contrib.auth.context_processors.auth',
-    'django.contrib.messages.context_processors.messages',
-    'django.core.context_processors.debug',
-    'django.core.context_processors.i18n',
-    'django.core.context_processors.media',
-    'django.core.context_processors.request',
-    'django.core.context_processors.static',
-    'djblets.cache.context_processors.ajax_serial',
-    'djblets.cache.context_processors.media_serial',
-    'djblets.siteconfig.context_processors.siteconfig',
-    'djblets.siteconfig.context_processors.settings_vars',
-    'djblets.urls.context_processors.site_root',
-    'reviewboard.accounts.context_processors.auth_backends',
-    'reviewboard.accounts.context_processors.profile',
-    'reviewboard.admin.context_processors.version',
-    'reviewboard.site.context_processors.localsite',
-)
-
 SITE_ROOT_URLCONF = 'reviewboard.urls'
 ROOT_URLCONF = 'djblets.urls.root'
 
@@ -119,11 +103,6 @@ REVIEWBOARD_ROOT = os.path.abspath(os.path.split(__file__)[0])
 
 # where is the site on your server ? - add the trailing slash.
 SITE_ROOT = '/'
-
-TEMPLATE_DIRS = (
-    # Don't forget to use absolute paths, not relative paths.
-    os.path.join(REVIEWBOARD_ROOT, 'templates'),
-)
 
 STATICFILES_DIRS = (
     ('lib', os.path.join(REVIEWBOARD_ROOT, 'static', 'lib')),
@@ -136,11 +115,13 @@ STATICFILES_FINDERS = (
     'django.contrib.staticfiles.finders.FileSystemFinder',
     'django.contrib.staticfiles.finders.AppDirectoriesFinder',
     'djblets.extensions.staticfiles.ExtensionFinder',
+    'pipeline.finders.PipelineFinder',
 )
 
 STATICFILES_STORAGE = 'pipeline.storage.PipelineCachedStorage'
 
 RB_BUILTIN_APPS = [
+    'corsheaders',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -148,26 +129,36 @@ RB_BUILTIN_APPS = [
     'django.contrib.sessions',
     'django.contrib.staticfiles',
     'djblets',
+    'djblets.avatars',
     'djblets.configforms',
     'djblets.datagrid',
     'djblets.extensions',
+    'djblets.features',
     'djblets.feedview',
+    'djblets.forms',
     'djblets.gravatars',
+    'djblets.integrations',
     'djblets.log',
     'djblets.pipeline',
+    'djblets.privacy',
+    'djblets.recaptcha',
     'djblets.siteconfig',
     'djblets.util',
     'haystack',
+    'oauth2_provider',
     'pipeline',  # Must be after djblets.pipeline
     'reviewboard',
     'reviewboard.accounts',
     'reviewboard.admin',
     'reviewboard.attachments',
+    'reviewboard.avatars',
     'reviewboard.changedescs',
     'reviewboard.diffviewer',
     'reviewboard.extensions',
     'reviewboard.hostingsvcs',
+    'reviewboard.integrations',
     'reviewboard.notifications',
+    'reviewboard.oauth',
     'reviewboard.reviews',
     'reviewboard.scmtools',
     'reviewboard.site',
@@ -190,9 +181,14 @@ WEB_API_ENCODERS = (
 
 # The backends that are used to authenticate requests against the web API.
 WEB_API_AUTH_BACKENDS = (
-    'djblets.webapi.auth.backends.basic.WebAPIBasicAuthBackend',
+    'reviewboard.webapi.auth_backends.WebAPIBasicAuthBackend',
     'djblets.webapi.auth.backends.api_tokens.WebAPITokenAuthBackend',
 )
+
+WEB_API_SCOPE_DICT_CLASS = (
+    'djblets.webapi.oauth2_scopes.ExtensionEnabledWebAPIScopeDictionary')
+
+WEB_API_ROOT_RESOURCE = 'reviewboard.webapi.resources.root.root_resource'
 
 SESSION_ENGINE = 'django.contrib.sessions.backends.cached_db'
 
@@ -210,6 +206,11 @@ CACHES = {
 
 LOGGING_NAME = "reviewboard"
 LOGGING_REQUEST_FORMAT = "%(_local_site_name)s - %(user)s - %(path)s"
+LOGGING_BLACKLIST = [
+    'django.db.backends',
+    'MARKDOWN',
+    'PIL.Image',
+]
 
 AUTH_PROFILE_MODULE = "accounts.Profile"
 
@@ -224,23 +225,6 @@ TEST_RUNNER = 'reviewboard.test.RBTestRunner'
 
 RUNNING_TEST = (os.environ.get('RB_RUNNING_TESTS') == '1')
 
-# Dependency checker functionality.  Gives our users nice errors when they
-# start out, instead of encountering them later on.  Most of the magic for this
-# happens in manage.py, not here.
-install_help = '''
-Please see https://www.reviewboard.org/docs/manual/dev/admin/
-for help setting up Review Board.
-'''
-
-
-def dependency_error(string):
-    sys.stderr.write('%s\n' % string)
-    sys.stderr.write(install_help)
-    sys.exit(1)
-
-if os.path.split(os.path.dirname(__file__))[1] != 'reviewboard':
-    dependency_error('The directory containing manage.py must be named '
-                     '"reviewboard"')
 
 LOCAL_ROOT = None
 PRODUCTION = True
@@ -280,6 +264,50 @@ SVNTOOL_BACKENDS = [
 GRAVATAR_DEFAULT = 'mm'
 
 
+TEMPLATE_DIRS = [
+    # Don't forget to use absolute paths, not relative paths.
+    os.path.join(REVIEWBOARD_ROOT, 'templates'),
+]
+
+# List of callables that know how to import templates from various sources.
+TEMPLATE_LOADERS = [
+    (
+        'djblets.template.loaders.conditional_cached.Loader',
+        (
+            'django.template.loaders.filesystem.Loader',
+            'djblets.template.loaders.namespaced_app_dirs.Loader',
+            'djblets.extensions.loaders.Loader',
+        )
+    ),
+]
+
+TEMPLATE_CONTEXT_PROCESSORS = [
+    'django.contrib.auth.context_processors.auth',
+    'django.contrib.messages.context_processors.messages',
+    'django.core.context_processors.debug',
+    'django.core.context_processors.i18n',
+    'django.core.context_processors.media',
+    'django.core.context_processors.request',
+    'django.core.context_processors.static',
+    'djblets.cache.context_processors.ajax_serial',
+    'djblets.cache.context_processors.media_serial',
+    'djblets.siteconfig.context_processors.siteconfig',
+    'djblets.siteconfig.context_processors.settings_vars',
+    'djblets.urls.context_processors.site_root',
+    'reviewboard.accounts.context_processors.auth_backends',
+    'reviewboard.accounts.context_processors.profile',
+    'reviewboard.admin.context_processors.version',
+    'reviewboard.site.context_processors.localsite',
+]
+
+
+# A list of extensions that will be enabled by default when first loading the
+# extension registration. These won't be re-enabled automatically if disabled.
+EXTENSIONS_ENABLED_BY_DEFAULT = [
+    'rbintegrations.extension.RBIntegrationsExtension',
+]
+
+
 # Load local settings.  This can override anything in here, but at the very
 # least it needs to define database connectivity.
 try:
@@ -288,12 +316,31 @@ try:
 except ImportError as exc:
     dependency_error('Unable to import settings_local.py: %s' % exc)
 
+
+# If we're using MySQL, switch to our custom backend.
+for db_info in DATABASES.values():
+    if db_info['ENGINE'] == 'django.db.backends.mysql':
+        db_info['ENGINE'] = 'djblets.db.backends.mysql'
+
+
 SESSION_COOKIE_PATH = SITE_ROOT
 
 INSTALLED_APPS = RB_BUILTIN_APPS + RB_EXTRA_APPS + ['django_evolution']
 MIDDLEWARE_CLASSES += RB_EXTRA_MIDDLEWARE_CLASSES
 
-TEMPLATE_DEBUG = DEBUG
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': TEMPLATE_DIRS,
+        'OPTIONS': {
+            'context_processors': TEMPLATE_CONTEXT_PROCESSORS,
+            'debug': DEBUG,
+            'loaders': TEMPLATE_LOADERS,
+        },
+    },
+]
+
 
 if not LOCAL_ROOT:
     local_dir = os.path.dirname(settings_local.__file__)
@@ -322,13 +369,17 @@ ADMIN_MEDIA_ROOT = STATIC_ROOT + 'admin/'
 EXTENSIONS_STATIC_ROOT = os.path.join(MEDIA_ROOT, 'ext')
 
 # Haystack requires this to be defined here, otherwise it will throw errors.
-# The actual PATH will be loaded through load_site_config()
+# The actual HAYSTACK_CONNECTIONS settings will be loaded through
+# load_site_config().
 HAYSTACK_CONNECTIONS = {
     'default': {
         'ENGINE': 'haystack.backends.whoosh_backend.WhooshEngine',
         'PATH': os.path.join(SITE_DATA_DIR, 'search-index'),
     },
 }
+
+HAYSTACK_SIGNAL_PROCESSOR = \
+    'reviewboard.search.signal_processor.SignalProcessor'
 
 # Make sure that we have a staticfiles cache set up for media generation.
 # By default, we want to store this in local memory and not memcached or
@@ -370,26 +421,50 @@ LOGIN_REDIRECT_URL = SITE_ROOT + 'dashboard/'
 
 
 # Static media setup
-from reviewboard.staticbundles import PIPELINE_CSS, PIPELINE_JS
-
-PIPELINE_CSS_COMPRESSOR = None
-PIPELINE_JS_COMPRESSOR = 'pipeline.compressors.uglifyjs.UglifyJSCompressor'
-
-# On production (site-installed) builds, we always want to use the pre-compiled
-# versions. We want this regardless of the DEBUG setting (since they may
-# turn DEBUG on in order to get better error output).
-#
-# On a build running out of a source tree, for testing purposes, we want to
-# use the raw .less and JavaScript files when DEBUG is set. When DEBUG is
-# turned off in a non-production build, though, we want to be able to play
-# with the built output, so treat it like a production install.
-
-if PRODUCTION or not DEBUG or os.getenv('FORCE_BUILD_MEDIA', ''):
-    PIPELINE_COMPILERS = ['pipeline.compilers.less.LessCompiler']
-    PIPELINE_ENABLED = True
-elif DEBUG:
+if RUNNING_TEST:
     PIPELINE_COMPILERS = []
-    PIPELINE_ENABLED = False
+else:
+    PIPELINE_COMPILERS = [
+        'djblets.pipeline.compilers.es6.ES6Compiler',
+        'djblets.pipeline.compilers.less.LessCompiler',
+    ]
+
+NODE_PATH = os.path.join(REVIEWBOARD_ROOT, '..', 'node_modules')
+os.environ['NODE_PATH'] = NODE_PATH
+
+PIPELINE = {
+    # On production (site-installed) builds, we always want to use the
+    # pre-compiled versions. We want this regardless of the DEBUG setting
+    # (since they may turn DEBUG on in order to get better error output).
+    'PIPELINE_ENABLED': (PRODUCTION or not DEBUG or
+                         os.getenv('FORCE_BUILD_MEDIA', '')),
+    'COMPILERS': PIPELINE_COMPILERS,
+    'JAVASCRIPT': PIPELINE_JAVASCRIPT,
+    'STYLESHEETS': PIPELINE_STYLESHEETS,
+    'JS_COMPRESSOR': 'pipeline.compressors.uglifyjs.UglifyJSCompressor',
+    'CSS_COMPRESSOR': None,
+    'BABEL_BINARY': os.path.join(NODE_PATH, 'babel-cli', 'bin', 'babel.js'),
+    'BABEL_ARGUMENTS': [
+        '--presets', 'es2015',
+        '--plugins', 'dedent,django-gettext',
+        '-s', 'true',
+    ],
+    'LESS_BINARY': os.path.join(NODE_PATH, 'less', 'bin', 'lessc'),
+    'LESS_ARGUMENTS': [
+        '--include-path=%s' % STATIC_ROOT,
+        '--no-color',
+        '--source-map',
+        '--js',
+        '--plugin=@beanbag/less-plugin-autoprefix=> 2%, ie >= 9',
+
+        # This is just here for backwards-compatibility with any stylesheets
+        # that still have this. It's no longer necessary because compilation
+        # happens on the back-end instead of in the browser.
+        '--global-var=STATIC_ROOT=""',
+    ],
+    'UGLIFYJS_BINARY': os.path.join(NODE_PATH, 'uglify-js', 'bin', 'uglifyjs'),
+}
+
 
 # Packages to unit test
 TEST_PACKAGES = ['reviewboard']
@@ -398,3 +473,14 @@ TEST_PACKAGES = ['reviewboard']
 ABSOLUTE_URL_OVERRIDES = {
     'auth.user': lambda u: reverse('user', kwargs={'username': u.username})
 }
+
+FEATURE_CHECKER = 'reviewboard.features.checkers.RBFeatureChecker'
+
+OAUTH2_PROVIDER = {
+    'APPLICATION_MODEL': 'oauth.Application',
+    'DEFAULT_SCOPES': 'root:read',
+    'SCOPES': {},
+}
+
+
+fail_if_missing_dependencies()

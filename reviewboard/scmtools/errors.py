@@ -60,16 +60,16 @@ class FileNotFoundError(SCMError):
             msg = (_("The file '%s' could not be found in the repository")
                    % path)
         elif base_commit_id is not None and base_commit_id != revision:
-            msg = _("The file '%(path)s' (r%(revision)s, commit "
-                    "%(base_commit_id)s) could not be found in the "
-                    "repository") % {
+            msg = _('The file "%(path)s" (revision %(revision)s, commit '
+                    '%(base_commit_id)s) could not be found in the '
+                    'repository') % {
                 'path': path,
                 'revision': revision,
                 'base_commit_id': base_commit_id,
             }
         else:
-            msg = _("The file '%(path)s' (r%(revision)s) could not be found "
-                    "in the repository") % {
+            msg = _('The file "%(path)s" (revision %(revision)s) could not be '
+                    'found in the repository') % {
                 'path': path,
                 'revision': revision,
             }
@@ -105,8 +105,40 @@ class AuthenticationError(SSHAuthenticationError, SCMError):
 
 
 class UnverifiedCertificateError(SCMError):
-    """An error representing an unverified SSL certificate."""
+    """An error representing an unverified SSL certificate.
+
+    Attributes:
+        reviewboard.scmtools.certs.Certificate:
+        The certificate this error pertains to.
+    """
+
     def __init__(self, certificate):
-        SCMError.__init__(self, _('A verified SSL certificate is required '
-                                  'to connect to this repository.'))
+        """Initialize the error message.
+
+        Args:
+            certificate (reviewboard.scmtools.certs.Certificate):
+                The certificate this error pertains to.
+        """
+        info = []
+
+        if certificate.hostname:
+            info.append(_('hostname "%s"') % certificate.hostname)
+
+        if certificate.fingerprint:
+            info.append(_('fingerprint "%s"') % certificate.fingerprint)
+
+        if certificate and certificate.fingerprint:
+            msg = _(
+                'The SSL certificate for this repository (%s) was not '
+                'verified and might not be safe. This certificate needs to '
+                'be verified before the repository can be accessed.'
+            ) % (', '.join(info))
+        else:
+            msg = _(
+                'The SSL certificate for this repository was not verified '
+                'and might not be safe. This certificate needs to be '
+                'verified before the repository can be accessed.'
+            )
+
+        super(SCMError, self).__init__(msg)
         self.certificate = certificate

@@ -4,25 +4,89 @@ import logging
 import re
 
 from django.utils import six
-from django.utils.six.moves import range
+from django.utils.six.moves import cStringIO as StringIO
 
 from reviewboard.diffviewer.errors import DiffParserError
 
 
-class File(object):
+class ParsedDiffFile(object):
+    """A parsed file from a diff.
+
+    This stores information on a single file represented in a diff, including
+    the contents of that file's diff, as parsed by :py:class:`DiffParser` or
+    one of its subclasses.
+
+    Parsers should set the attributes on this based on the contents of the
+    diff, and should add any data found in the diff.
+
+    This class is meant to be used internally and by subclasses of
+    :py:class:`DiffParser`.
+    """
+
     def __init__(self):
+        """Initialize the parsed file information."""
         self.origFile = None
         self.newFile = None
         self.origInfo = None
         self.newInfo = None
         self.origChangesetId = None
-        self.data = None
         self.binary = False
         self.deleted = False
         self.moved = False
         self.copied = False
+        self.is_symlink = False
         self.insert_count = 0
         self.delete_count = 0
+        self.extra_data = {}
+
+        self._data_io = StringIO()
+        self._data = None
+
+    @property
+    def data(self):
+        """The data for this diff.
+
+        This must be accessed after :py:meth:`finalize` has been called.
+        """
+        if self._data is None:
+            raise ValueError('ParsedDiffFile.data cannot be accessed until '
+                             'finalize() is called.')
+
+        return self._data
+
+    def finalize(self):
+        """Finalize the parsed diff.
+
+        This makes the diff data available to consumers and closes the buffer
+        for writing.
+        """
+        self._data = self._data_io.getvalue()
+        self._data_io.close()
+
+    def prepend_data(self, data):
+        """Prepend data to the buffer.
+
+        Args:
+            data (bytes):
+                The data to prepend.
+        """
+        if data:
+            new_data_io = StringIO()
+            new_data_io.write(data)
+            new_data_io.write(self._data_io.getvalue())
+
+            self._data_io.close()
+            self._data_io = new_data_io
+
+    def append_data(self, data):
+        """Append data to the buffer.
+
+        Args:
+            data (bytes):
+                The data to append.
+        """
+        if data:
+            self._data_io.write(data)
 
 
 class DiffParser(object):
@@ -49,9 +113,9 @@ class DiffParser(object):
         logging.debug("DiffParser.parse: Beginning parse of diff, size = %s",
                       len(self.data))
 
-        preamble = b''
+        preamble = StringIO()
         self.files = []
-        file = None
+        parsed_file = None
         i = 0
 
         # Go through each line in the diff, looking for diff headers.
@@ -60,17 +124,33 @@ class DiffParser(object):
 
             if new_file:
                 # This line is the start of a new file diff.
-                file = new_file
-                file.data = preamble + file.data
-                preamble = b''
-                self.files.append(file)
+                #
+                # First, finalize the last one.
+                if self.files:
+                    self.files[-1].finalize()
+
+                parsed_file = new_file
+
+                # We need to prepend the preamble, if we have one.
+                parsed_file.prepend_data(preamble.getvalue())
+
+                preamble.close()
+                preamble = StringIO()
+
+                self.files.append(parsed_file)
                 i = next_linenum
             else:
-                if file:
-                    i = self.parse_diff_line(i, file)
+                if parsed_file:
+                    i = self.parse_diff_line(i, parsed_file)
                 else:
-                    preamble += self.lines[i] + b'\n'
+                    preamble.write(self.lines[i])
+                    preamble.write(b'\n')
                     i += 1
+
+        if self.files:
+            self.files[-1].finalize()
+
+        preamble.close()
 
         logging.debug("DiffParser.parse: Finished parsing diff.")
 
@@ -85,7 +165,8 @@ class DiffParser(object):
             elif line.startswith(b'+'):
                 info.insert_count += 1
 
-        info.data += line + b'\n'
+        info.append_data(line)
+        info.append_data(b'\n')
 
         return linenum + 1
 
@@ -95,7 +176,7 @@ class DiffParser(object):
         to find a diff header.
         """
         info = {}
-        file = None
+        parsed_file = None
         start = linenum
         linenum = self.parse_special_header(linenum, info)
         linenum = self.parse_diff_header(linenum, info)
@@ -113,36 +194,31 @@ class DiffParser(object):
                 if info.get('skip', False):
                     return linenum, None
 
-            file = File()
-            file.binary = info.get('binary', False)
-            file.deleted = info.get('deleted', False)
-            file.moved = info.get('moved', False)
-            file.copied = info.get('copied', False)
-            file.origFile = info.get('origFile')
-            file.newFile = info.get('newFile')
-            file.origInfo = info.get('origInfo')
-            file.newInfo = info.get('newInfo')
-            file.origChangesetId = info.get('origChangesetId')
+            parsed_file = ParsedDiffFile()
+            parsed_file.origChangesetId = info.get('origChangesetId')
 
-            if isinstance(file.origFile, six.binary_type):
-                file.origFile = file.origFile.decode('utf-8')
+            for attr in ('binary', 'deleted', 'moved', 'copied', 'is_symlink'):
+                setattr(parsed_file, attr, info.get(attr, False))
 
-            if isinstance(file.newFile, six.binary_type):
-                file.newFile = file.newFile.decode('utf-8')
+            for attr in ('origFile', 'newFile', 'origInfo', 'newInfo'):
+                attr_value = info.get(attr)
 
-            if isinstance(file.origInfo, six.binary_type):
-                file.origInfo = file.origInfo.decode('utf-8')
+                if isinstance(attr_value, six.binary_type):
+                    attr_value = attr_value.decode('utf-8')
 
-            if isinstance(file.newInfo, six.binary_type):
-                file.newInfo = file.newInfo.decode('utf-8')
+                setattr(parsed_file, attr, attr_value)
+
+            parsed_file.extra_data = info.get('extra_data', {})
 
             # The header is part of the diff, so make sure it gets in the
             # diff content.
-            file.data = b''.join([
-                self.lines[i] + b'\n' for i in range(start, linenum)
-            ])
+            lines = self.lines[start:linenum]
 
-        return linenum, file
+            for line in lines:
+                parsed_file.append_data(line)
+                parsed_file.append_data(b'\n')
+
+        return linenum, parsed_file
 
     def parse_special_header(self, linenum, info):
         """
@@ -153,16 +229,37 @@ class DiffParser(object):
         The line number returned is the line after the special header,
         which can be multiple lines long.
         """
-        if linenum + 1 < len(self.lines) and \
-           self.lines[linenum].startswith(b"Index: ") and \
-           self.lines[linenum + 1] == self.INDEX_SEP:
-            # This is an Index: header, which is common in CVS and Subversion,
-            # amongst other systems.
-            try:
-                info['index'] = self.lines[linenum].split(None, 1)[1]
-            except ValueError:
-                raise DiffParserError("Malformed Index line", linenum)
-            linenum += 2
+        try:
+            index_line = self.lines[linenum]
+            is_index = index_line.startswith(b'Index: ')
+        except IndexError:
+            is_index = False
+
+        if is_index:
+            # Try to find the "====" line.
+            temp_linenum = linenum + 1
+
+            while temp_linenum + 1 < len(self.lines):
+                line = self.lines[temp_linenum]
+
+                if line == self.INDEX_SEP:
+                    # We found the line. This is looking like a valid diff
+                    # for CVS, Subversion, and other systems. Try to parse
+                    # the data from the line.
+                    try:
+                        info['index'] = index_line.split(None, 1)[1]
+                    except ValueError:
+                        raise DiffParserError('Malformed Index line', linenum)
+
+                    linenum = temp_linenum + 1
+                    break
+                elif line.startswith((b'---', b'+++')):
+                    # We never found that line, but we did hit the start of
+                    # a diff file. We can't treat the "Index:" line as special
+                    # in this case.
+                    break
+
+                temp_linenum += 1
 
         return linenum
 
@@ -174,12 +271,19 @@ class DiffParser(object):
         The line number returned is the line after the special header,
         which can be multiple lines long.
         """
-        if linenum + 1 < len(self.lines) and \
-           ((self.lines[linenum].startswith(b'--- ') and
-             self.lines[linenum + 1].startswith(b'+++ ')) or
-            (self.lines[linenum].startswith(b'*** ') and
-             self.lines[linenum + 1].startswith(b'--- ') and
-             not self.lines[linenum].endswith(b" ****"))):
+        try:
+            line1 = self.lines[linenum]
+            line2 = self.lines[linenum + 1]
+
+            is_diff_header = (
+               (line1.startswith(b'--- ') and line2.startswith(b'+++ ')) or
+               (line1.startswith(b'*** ') and line2.startswith(b'--- ') and
+                not line1.endswith(b' ****'))
+            )
+        except IndexError:
+            is_diff_header = False
+
+        if is_diff_header:
             # This is a unified or context diff header. Parse the
             # file and extra info.
             try:
@@ -193,8 +297,9 @@ class DiffParser(object):
                                                linenum)
                 linenum += 1
             except ValueError:
-                raise DiffParserError("The diff file is missing revision " +
-                                      "information", linenum)
+                raise DiffParserError(
+                    'The diff file is missing revision information',
+                    linenum)
 
         return linenum
 

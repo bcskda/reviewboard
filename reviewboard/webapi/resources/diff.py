@@ -18,7 +18,7 @@ from reviewboard.diffviewer.models import DiffSet
 from reviewboard.reviews.forms import UploadDiffForm
 from reviewboard.reviews.models import ReviewRequest, ReviewRequestDraft
 from reviewboard.scmtools.errors import FileNotFoundError
-from reviewboard.webapi.base import WebAPIResource
+from reviewboard.webapi.base import ImportExtraDataError, WebAPIResource
 from reviewboard.webapi.decorators import (webapi_check_login_required,
                                            webapi_check_local_site)
 from reviewboard.webapi.errors import (DIFF_EMPTY,
@@ -59,7 +59,7 @@ class DiffResource(WebAPIResource):
         'timestamp': {
             'type': six.text_type,
             'description': 'The date and time that the diff was uploaded '
-                           '(in YYYY-MM-DD HH:MM:SS format).',
+                           '(in ``YYYY-MM-DD HH:MM:SS`` format).',
         },
         'repository': {
             'type': 'reviewboard.webapi.resources.repository.'
@@ -257,10 +257,8 @@ class DiffResource(WebAPIResource):
             <Unified Diff Content Here>
             -- SoMe BoUnDaRy --
 
-        Extra data can be stored on the diff for later lookup by passing
-        ``extra_data.key_name=value``. The ``key_name`` and ``value`` can
-        be any valid strings. Passing a blank ``value`` will remove the key.
-        The ``extra_data.`` prefix is required.
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         # Prevent a circular dependency, as ReviewRequestDraftResource
         # needs DraftDiffResource, which needs DiffResource.
@@ -335,13 +333,18 @@ class DiffResource(WebAPIResource):
         draft.diffset = diffset
 
         # We only want to add default reviewers the first time.  Was bug 318.
-        if review_request.diffset_history.diffsets.count() == 0:
+        if not review_request.diffset_history.diffsets.exists():
             draft.add_default_reviewers()
 
         draft.save()
 
         if extra_fields:
-            self.import_extra_data(diffset, diffset.extra_data, extra_fields)
+            try:
+                self.import_extra_data(diffset, diffset.extra_data,
+                                       extra_fields)
+            except ImportExtraDataError as e:
+                return e.error_payload
+
             diffset.save(update_fields=['extra_data'])
 
         if discarded_diffset:
@@ -365,10 +368,8 @@ class DiffResource(WebAPIResource):
         This is used solely for updating extra data on a diff. The contents
         of a diff cannot be modified.
 
-        Extra data can be stored on the diff for later lookup by passing
-        ``extra_data.key_name=value``. The ``key_name`` and ``value`` can
-        be any valid strings. Passing a blank ``value`` will remove the key.
-        The ``extra_data.`` prefix is required.
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         try:
             review_request = \
@@ -381,7 +382,12 @@ class DiffResource(WebAPIResource):
             return self.get_no_access_error(request)
 
         if extra_fields:
-            self.import_extra_data(diffset, diffset.extra_data, extra_fields)
+            try:
+                self.import_extra_data(diffset, diffset.extra_data,
+                                       extra_fields)
+            except ImportExtraDataError as e:
+                return e.error_payload
+
             diffset.save(update_fields=['extra_data'])
 
         return 200, {

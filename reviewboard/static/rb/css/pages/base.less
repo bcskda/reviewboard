@@ -9,15 +9,15 @@
  * sidebar mode.
  */
 .mobile-menu-animation() {
-  .transition-transform(@mobile-menu-animate-duration,
-                        @mobile-menu-animate-timing-func);
+  transition: @mobile-menu-animate-duration transition
+              @mobile-menu-animate-timing-func;
 }
 
 
 body {
   background-color: #F9F9F9;
-  color: black;
-  font-family: Verdana, Arial, Helvetica, Sans-Serif;
+  color: @default-text-color;
+  font-family: @font-family;
   font-size: 11px;
   margin: 0;
   padding: 0;
@@ -35,7 +35,7 @@ body {
       #container,
       #mobile_menu_mask,
       #mobile_navbar_container {
-        .transform(translate(@mobile-navbar-width, 0));
+        transform: translate(@mobile-navbar-width, 0);
       }
     }
   });
@@ -72,6 +72,14 @@ pre, textarea, .CodeMirror, .editable.field-text-area {
   font-size: @textarea-font-size;
   font-family: @textarea-font-family;
   line-height: @textarea-line-height;
+}
+
+.editable.field-text-area {
+  /*
+   * Always show the text cursor when hovering over an editable text field
+   * placeholder, so the entire thing feels like a text field.
+   */
+  cursor: text;
 }
 
 textarea {
@@ -146,22 +154,27 @@ textarea {
       padding: 0;
       position: absolute;
       right: 0;
-      .border-radius(0 0 @box-border-radius @box-border-radius);
+      border-radius: 0 0 @box-border-radius @box-border-radius;
 
       li {
         float: none;
         margin: 0;
         padding: 0;
-        text-align: right;
 
         &:last-child {
-          .border-radius(0 0 @box-border-radius @box-border-radius);
+          border-radius: 0 0 @box-border-radius @box-border-radius;
         }
 
         a {
           margin: 0;
         }
       }
+    }
+
+    .fa {
+      margin-right: 0.2em;
+      min-width: 14px;
+      text-align: center;
     }
   }
 }
@@ -343,18 +356,21 @@ textarea {
     margin: 0 1em;
 
     .on-mobile-medium-screen-720({
+      box-sizing: border-box;
       float: none;
       margin: 0.5em 0.5em 0 0.5em;
-      .box-sizing(border-box);
     });
 
     input {
       border: 1px #CCC solid;
       margin: 0;
       padding: 2px;
-      .border-radius(6px);
+      border-radius: 6px;
       background-color: #EEEEEE;
       font-size: 1.2em;
+
+      // Safari does super dumb things with input[type="search"]. Fix that.
+      -webkit-appearance: textfield;
 
       .on-mobile-medium-screen-720({
         /*
@@ -362,10 +378,10 @@ textarea {
          * most mobile apps and sites, giving more breathing room.
          */
         background-color: white;
+        box-sizing: border-box;
         padding: 4px 8px;
         margin: 0;
         width: 100%;
-        .box-sizing(border-box);
       });
     }
   }
@@ -495,7 +511,7 @@ textarea {
     width: 50%;
 
     a {
-      .box-sizing(border-box);
+      box-sizing: border-box;
       display: inline-block;
       padding: 1em;
       width: 100%;
@@ -509,7 +525,7 @@ textarea {
  * content to fully show through.
  */
 #mobile_menu_mask {
-  .box-shadow(-1px 0 8px 4px rgba(0, 0, 0, 0.4));
+  box-shadow: -1px 0 8px 4px rgba(0, 0, 0, 0.4);
   display: none;
   overflow: hidden;
   position: absolute;
@@ -530,7 +546,7 @@ textarea {
  */
 #mobile_navbar_container {
   background-color: @mobile-menu-bg-color;
-  .box-sizing(border-box);
+  box-sizing: border-box;
   color: @mobile-menu-text-color;
   border: 0;
   border-right: 1px @mobile-menu-border-color solid;
@@ -577,10 +593,10 @@ textarea {
 
   /* Section headers */
   .section h3 {
-    .box-shadow(inset 0 0 8px 4px rbga(0, 0, 0, 0.8));
     background: @mobile-menu-header-bg-color;
     border-top: 1px @mobile-menu-header-border-color solid;
     border-bottom: 1px @mobile-menu-header-border-color solid;
+    box-shadow: inset 0 0 8px 4px rbga(0, 0, 0, 0.8);
     font-size: 120%;
     font-weight: normal;
     margin: 0;

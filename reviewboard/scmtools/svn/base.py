@@ -2,40 +2,18 @@
 from __future__ import unicode_literals
 
 import re
+from django.utils.six.moves.urllib.parse import quote
+from django.utils.translation import ugettext as _
 
 from reviewboard.scmtools.core import HEAD
+from reviewboard.scmtools.errors import SCMError
 
 
 class Client(object):
     '''Base SVN client.'''
 
-    AUTHOR_KEYWORDS = ['author', 'lastchangedby']
-    DATE_KEYWORDS = ['date', 'lastchangeddate']
-    REVISION_KEYWORDS = ['revision', 'lastchangedrevision', 'rev']
-    URL_KEYWORDS = ['headurl', 'url']
-    ID_KEYWORDS = ['id']
-    HEADER_KEYWORDS = ['header']
-
     LOG_DEFAULT_START = 'HEAD'
     LOG_DEFAULT_END = '1'
-
-    # Mapping of keywords to known aliases
-    keywords = {
-        # Standard keywords
-        'author': AUTHOR_KEYWORDS,
-        'date': DATE_KEYWORDS,
-        'revision': REVISION_KEYWORDS,
-        'headURL': URL_KEYWORDS,
-        'id': ID_KEYWORDS,
-        'header': HEADER_KEYWORDS,
-
-        # Aliases
-        'lastchangedby': AUTHOR_KEYWORDS,
-        'lastchangeddate': DATE_KEYWORDS,
-        'lastchangedrevision': REVISION_KEYWORDS,
-        'rev': REVISION_KEYWORDS,
-        'url': URL_KEYWORDS,
-    }
 
     def __init__(self, config_dir, repopath, username=None, password=None):
         self.repopath = repopath
@@ -88,36 +66,6 @@ class Client(object):
         """
         raise NotImplementedError
 
-    def collapse_keywords(self, data, keyword_str):
-        """
-        Collapse SVN keywords in string.
-
-        SVN allows for several keywords (such as $Id$ and $Revision$) to
-        be expanded, though these keywords are limited to a fixed set
-        (and associated aliases) and must be enabled per-file.
-
-        Keywords can take two forms: $Keyword$ and $Keyword::     $
-        The latter allows the field to take a fixed size when expanded.
-
-        When we cat a file on SVN, the keywords come back expanded, which
-        isn't good for us as we need to diff against the collapsed version.
-        This function makes that transformation.
-        """
-        def repl(m):
-            if m.group(2):
-                return b'$%s::%s$' % (m.group(1), b' ' * len(m.group(3)))
-
-            return b'$%s$' % m.group(1)
-
-        # Get any aliased keywords
-        keywords = [re.escape(keyword).encode('utf-8')
-                    for name in re.split(r'\W+', keyword_str)
-                    for keyword in self.keywords.get(name.lower(), [])]
-
-        regex = re.compile(r"\$(%s):(:?)([^\$\n\r]*)\$" % '|'.join(keywords),
-                           re.IGNORECASE)
-        return regex.sub(repl, data)
-
     @property
     def repository_info(self):
         """Returns metadata about the repository:
@@ -129,14 +77,83 @@ class Client(object):
         raise NotImplementedError
 
     def normalize_path(self, path):
+        """Normalize a path to a file/directory for a request to Subversion.
+
+        If the path is an absolute path beginning at the base of the
+        repository, it will be returned as-is. Otherwise, it will be appended
+        onto the repository path, with any leading ``/`` characters on the
+        path removed.
+
+        If appending the path, care will be taken to quote special characters
+        like a space, ``#``, or ``?``, in order to ensure that they're not
+        mangled. There are many characters Subversion does consider valid that
+        would normally be quoted, so this isn't true URL quoting.
+
+        All trailing ``/`` characters will also be removed.
+
+        Args:
+            path (unicode):
+                The path to normalize.
+
+        Returns:
+            unicode:
+            The normalized path.
+        """
         if path.startswith(self.repopath):
-            return path
-        elif path.startswith('//'):
-            return self.repopath + path[1:]
-        elif path[0] == '/':
-            return self.repopath + path
+            norm_path = path
         else:
-            return self.repopath + "/" + path
+            # Some important notes for the quoting below:
+            #
+            # 1) Subversion requires that we operate off of a URI-based
+            #    repository path in order for file lookups to at all work, so
+            #    we can be sure we're building a URI here. That means we're
+            #    safe to quote.
+            #
+            # 2) This is largely being mentioned because the original
+            #    contribution to fix a lookup issue here with special
+            #    characters was written to be compatible with local file
+            #    paths. Support for that is a pretty common assumption, but
+            #    is unnecessary, so the code here is safe.
+            #
+            # 3) We can't rely on urllib's standard quoting behavior.
+            #    completely. Subversion has a specific table of characters
+            #    that must be quoted, and ones that can't be. There is enough
+            #    we can leverage from urlquote's own table, but we need to
+            #    mark several more as safe.
+            #
+            #    See the "svn_uri_char_validity" look up table and notes here:
+            #
+            #    https://github.com/apache/subversion/blob/trunk/subversion/libsvn_subr/path.c
+            #
+            # 4) file:// URLs don't allow non-printable characters (character
+            #    codes < 32), while non-file:// URLs do. We don't want to
+            #    trigger issues in Subversion (earlier versions assume this
+            #    is our responsibility), so we validate here.
+            #
+            # 5) Modern Subversion seems to handle its own normalization now,
+            #    from what we can tell. That might not always be true, though,
+            #    and we need to support older versions, so we'll continue to
+            #    maintain this going forward.
+            if self.repopath.startswith('file:'):
+                # Validate that this doesn't have any unprintable ASCII
+                # characters or older versions of Subversion will throw a
+                # fit.
+                for c in path:
+                    if 0 <= ord(c) < 32:
+                        raise SCMError(
+                            _('Invalid character code %(code)s found in '
+                              'path %(path)r.')
+                            % {
+                                'code': ord(c),
+                                'path': path,
+                            })
+
+            norm_path = '%s/%s' % (
+                self.repopath,
+                quote(path.lstrip('/'), safe="!$&'()*+,'-./:=@_~")
+            )
+
+        return norm_path.rstrip('/')
 
     def accept_ssl_certificate(self, path, on_failure=None):
         """If the repository uses SSL, this method is used to determine whether

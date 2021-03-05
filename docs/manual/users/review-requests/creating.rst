@@ -24,6 +24,8 @@ built-in diff tools generating files with insufficient information). For more
 information, see the :ref:`RBTools documentation <rbtools:rbt>`.
 
 
+.. _new-review-request-page:
+
 Using the Web UI to Create Review Requests
 ==========================================
 
@@ -95,8 +97,6 @@ information.
 
 Post-commit Review Requests
 ---------------------------
-
-.. versionadded:: 2.0
 
 The web UI now allows you to create review requests for :term:`post-commit
 review`.

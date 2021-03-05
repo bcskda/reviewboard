@@ -15,6 +15,7 @@
 #
 # All configuration values have a default; values that are commented out
 # serve to show the default.
+import logging
 import os
 import sys
 from datetime import datetime
@@ -34,8 +35,15 @@ sys.path = os.getenv('PYTHONPATH_PREPEND', '').split(':') + sys.path
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'reviewboard.settings')
 
 import reviewboard
+from reviewboard.dependencies import (django_doc_major_version,
+                                      djblets_doc_major_version)
 
-from github_linkcode import github_linkcode_resolve
+from beanbag_docutils.sphinx.ext.github import github_linkcode_resolve
+
+
+# Set up logging. Sphinx won't set up a root logger for us, and we want to
+# avoid errors about not having handlers there.
+logging.basicConfig()
 
 
 # If your extensions are in another directory, add it here. If the directory
@@ -57,10 +65,13 @@ extensions = [
     'sphinx.ext.linkcode',
     'sphinx.ext.napoleon',
     'sphinx.ext.todo',
-    'autodoc_utils',
+    'beanbag_docutils.sphinx.ext.autodoc_utils',
+    'beanbag_docutils.sphinx.ext.django_utils',
+    'beanbag_docutils.sphinx.ext.extlinks',
+    'beanbag_docutils.sphinx.ext.http_role',
+    'beanbag_docutils.sphinx.ext.ref_utils',
+    'beanbag_docutils.sphinx.ext.retina_images',
     'webapidocs',
-    'httprole',
-    'retina_images',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -123,6 +134,9 @@ add_module_names = False
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
 
+# Disable warning of unknown referenced options.
+suppress_warnings = ['ref.option']
+
 
 # Options for HTML output
 # -----------------------
@@ -153,7 +167,7 @@ html_title = "Review Board Manual"
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "classic.css" will overwrite the builtin "classic.css".
-html_static_path = ['_static']
+#html_static_path = ['_static']
 
 # If not '', a 'Last updated on:' timestamp is inserted at every page bottom,
 # using the given strftime format.
@@ -230,17 +244,64 @@ latex_documents = [
 # If false, no module index is generated.
 #latex_use_modindex = True
 
-latex_show_urls = True
+latex_show_urls = 'inline'
 latex_show_pagerefs = True
 
 
+# Determine the branch or tag used for code references.
+rb_version = reviewboard.VERSION
+
+if rb_version[3] == 'final' or rb_version[5] > 0:
+    git_branch = 'release-%s.%s' % (rb_version[0], rb_version[1])
+
+    if reviewboard.is_release():
+        if rb_version[2]:
+            git_branch += '.%s' % rb_version[2]
+
+            if rb_version[3]:
+                git_branch += '.%s' % rb_version[3]
+
+        if version[4] != 'final':
+            git_branch += rb_version[4]
+
+            if rb_version[5]:
+                git_branch += '%d' % rb_version[5]
+    else:
+        git_branch += '.x'
+else:
+    git_branch = 'master'
+
+
+# Check whether reviewboard.org intersphinx lookups should use the local
+# server.
+if os.getenv('DOCS_USE_LOCAL_RBWEBSITE') == '1':
+    rbwebsite_url = 'http://localhost:8081'
+else:
+    rbwebsite_url = 'https://www.reviewboard.org'
+
+
+django_doc_base_url = ('http://django.readthedocs.io/en/%s.x/'
+                       % django_doc_major_version)
+
+
 intersphinx_mapping = {
-    'django': ('https://docs.djangoproject.com/en/%s/'
-               % reviewboard.django_major_version,
-               'https://docs.djangoproject.com/en/%s/_objects/'
-               % reviewboard.django_major_version),
+    'django': (django_doc_base_url, None),
+    'djblets': ('%s/docs/djblets/%s/'
+                % (rbwebsite_url, djblets_doc_major_version),
+                None),
     'python': ('https://docs.python.org/2.7', None),
-    'rbtools': ('https://www.reviewboard.org/docs/rbtools/dev/', None),
+    'rbtools': ('%s/docs/rbtools/latest/' % rbwebsite_url, None),
+    'rbcontributing': ('%s/docs/codebase/dev/' % rbwebsite_url, None),
+}
+
+
+extlinks = {
+    'djangodoc': ('%s%%s.html' % django_doc_base_url, None),
+    'backbonejs': ('http://backbonejs.org/#%s', 'Backbone.'),
+    'rbintegration': ('https://www.reviewboard.org/integrations/%s', ''),
+    'rbsource': ('https://github.com/reviewboard/reviewboard/blob/%s/%%s'
+                 % git_branch,
+                 ''),
 }
 
 todo_include_todos = True
@@ -275,8 +336,20 @@ autodoc_excludes = {
 
 autosummary_generate = True
 
-napolean_google_docstring = True
-napolean_numpy_docstring = False
+napoleon_beanbag_docstring = True
+napoleon_google_docstring = False
+napoleon_numpy_docstring = False
+
+webapi_docname_map = {
+    'o-auth-application': 'oauth-application',
+    'o-auth-token': 'oauth-token',
+}
 
 
-linkcode_resolve = github_linkcode_resolve
+def linkcode_resolve(domain, info):
+    return github_linkcode_resolve(domain=domain,
+                                   info=info,
+                                   allowed_module_names=['reviewboard'],
+                                   github_org_id='reviewboard',
+                                   github_repo_id='reviewboard',
+                                   branch=git_branch)

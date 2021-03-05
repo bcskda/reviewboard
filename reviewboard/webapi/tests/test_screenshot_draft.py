@@ -6,13 +6,11 @@ from djblets.webapi.errors import PERMISSION_DENIED
 from reviewboard.reviews.models import ReviewRequestDraft, Screenshot
 from reviewboard.webapi.resources import resources
 from reviewboard.webapi.tests.base import BaseWebAPITestCase
-from reviewboard.webapi.tests.mimetypes import (screenshot_item_mimetype,
-                                                screenshot_draft_item_mimetype,
+from reviewboard.webapi.tests.mimetypes import (screenshot_draft_item_mimetype,
                                                 screenshot_draft_list_mimetype)
 from reviewboard.webapi.tests.mixins import BasicTestsMetaclass
 from reviewboard.webapi.tests.urls import (get_screenshot_draft_item_url,
-                                           get_screenshot_draft_list_url,
-                                           get_screenshot_list_url)
+                                           get_screenshot_draft_list_url)
 
 
 @six.add_metaclass(BasicTestsMetaclass)
@@ -62,17 +60,20 @@ class ResourceListTests(BaseWebAPITestCase):
             submitter=user,
             publish=True)
 
-        return (get_screenshot_list_url(review_request, local_site_name),
-                screenshot_item_mimetype,
+        return (get_screenshot_draft_list_url(review_request, local_site_name),
+                screenshot_draft_item_mimetype,
                 {
                     'caption': 'Trophy',
-                    'path': open(self._getTrophyFilename(), 'r'),
+                    'path': open(self.get_sample_image_filename(), 'rb'),
                 },
                 [review_request])
 
     def check_post_result(self, user, rsp, review_request):
-        screenshots = list(review_request.get_draft().screenshots.all())
+        draft = review_request.get_draft()
+
+        screenshots = list(draft.screenshots.all())
         self.assertEqual(len(screenshots), 1)
+        self.assertEqual(draft.screenshots_count, 1)
 
         screenshot = screenshots[0]
         self.assertEqual(screenshot.draft_caption, 'Trophy')
@@ -85,15 +86,14 @@ class ResourceListTests(BaseWebAPITestCase):
         review_request = self.create_review_request()
         self.assertNotEqual(review_request.submitter, self.user)
 
-        f = open(self._getTrophyFilename(), "r")
-        rsp = self.api_post(
-            get_screenshot_draft_list_url(review_request),
-            {
-                'caption': 'Trophy',
-                'path': f,
-            },
-            expected_status=403)
-        f.close()
+        with open(self.get_sample_image_filename(), 'rb') as f:
+            rsp = self.api_post(
+                get_screenshot_draft_list_url(review_request),
+                {
+                    'caption': 'Trophy',
+                    'path': f,
+                },
+                expected_status=403)
 
         self.assertEqual(rsp['stat'], 'fail')
         self.assertEqual(rsp['err']['code'], PERMISSION_DENIED.code)

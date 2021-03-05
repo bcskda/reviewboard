@@ -26,7 +26,7 @@ class HostingServiceResource(WebAPIResource):
     added_in = '2.5'
 
     name = 'hosting_service'
-    model_object_key = 'id'
+    model_object_key = 'hosting_service_id'
     model = HostingService
     uri_object_key = 'hosting_service_id'
     uri_object_key_regex = r'[a-z0-9_-]+'
@@ -50,9 +50,25 @@ class HostingServiceResource(WebAPIResource):
             'description': 'Whether the service is meant to be self-hosted '
                            'in the network.',
         },
+        'plans': {
+            'type': dict,
+            'description': (
+                'Information on account configuration plans supported by '
+                'the hosting service. These correspond to the '
+                '``repository_plan`` field used when creating or updating a '
+                'repository (see :ref:`webapi2.0-repository-list-resource`). '
+                'This is not used for all services.'
+            ),
+            'added_in': '3.0.19',
+        },
         'supported_scmtools': {
             'type': [six.text_type],
-            'description': 'The list of supported types of repositories.',
+            'description': 'The comprehensive list of repository types '
+                           'suppported by Review Board. Each of these is a '
+                           'registered SCMTool ID or human-readable name.\n'
+                           '\n'
+                           'Some of these may not be supported by the service '
+                           'anymore. See ``visible_scmtools``.'
         },
         'supports_bug_trackers': {
             'type': bool,
@@ -72,7 +88,94 @@ class HostingServiceResource(WebAPIResource):
             'description': 'Whether two-factor authentication is supported '
                            'when linking an account.',
         },
+        'visible_scmtools': {
+            'type': [six.text_type],
+            'description': 'The list of repository types that are shown by '
+                           'Review Board when configuring a new repository. '
+                           'Each of these is a registered SCMTool ID or '
+                           'human-readable name.',
+            'added_in': '3.0.17',
+        },
     }
+
+    def serialize_id_field(self, hosting_service, *args, **kwargs):
+        return hosting_service.hosting_service_id
+
+    def serialize_plans_field(self, hosting_service, *args, **kwargs):
+        """Serialize the plans field.
+
+        This will convert the existing :py:attr:`HostingService.plans
+        <reviewboard.hostingsvcs.service.HostingService.plans>` field (or
+        create a new one if the service doesn't support multiple plans) into
+        a more slimmed-down payload that can be transmitted via the API.
+
+        Args:
+            hosting_service (reviewboard.hostingsvcs.service.HostingService):
+                The hosting service being serialized.
+
+            *args (tuple, unused):
+                Additional positional arguments.
+
+            **kwargs (dict, unused):
+                Additional keyword arguments.
+
+        Returns:
+            dict:
+            The serialized plan information.
+        """
+        plans = hosting_service.plans
+        default_form = hosting_service.form
+
+        if not plans:
+            plans = [
+                ('', {
+                    'name': 'Default',
+                    'fields': default_form,
+                }),
+            ]
+
+        return {
+            plan_id: {
+                'name': info['name'],
+                'fields': {
+                    field_name: {
+                        'name': field.label,
+                        'required': field.required,
+                        'help_text': field.help_text,
+                    }
+                    for field_name, field in six.iteritems(
+                        info.get('form', default_form).base_fields)
+                },
+            }
+            for plan_id, info in plans
+        }
+
+    def serialize_visible_scmtools_field(self, hosting_service, *args,
+                                         **kwargs):
+        """Serialize the visible_scmtools field on the hosting service.
+
+        Args:
+            hosting_service (reviewboard.hostingsvcs.service.HostingService):
+                The hosting service being serialized.
+
+            *args (tuple, unused):
+                Additional positional arguments.
+
+            **kwargs (dict, unused):
+                Additional keyword arguments.
+
+        Returns:
+            list of unicode:
+            The list of visible SCMTools.
+        """
+        # If the hosting service does not explicitly define this, it will be
+        # None. We need to then return the list of supported SCMTools.
+        scmtools = hosting_service.visible_scmtools
+
+        if scmtools is None:
+            scmtools = hosting_service.supported_scmtools
+
+        return scmtools
 
     def has_list_access_permissions(self, *args, **kwargs):
         return True
@@ -106,13 +209,15 @@ class HostingServiceResource(WebAPIResource):
                 'accounts': {
                     'method': 'GET',
                     'href': request.build_absolute_uri(
-                        '%s?service=%s' % (accounts_url, obj.id)
+                        '%s?service=%s' % (accounts_url,
+                                           obj.hosting_service_id)
                     ),
                 },
                 'repositories': {
                     'method': 'GET',
                     'href': request.build_absolute_uri(
-                        '%s?hosting-service=%s' % (repos_url, obj.id)
+                        '%s?hosting-service=%s'
+                        % (repos_url, obj.hosting_service_id)
                     ),
                 }
             })

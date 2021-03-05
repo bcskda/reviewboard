@@ -1,5 +1,6 @@
 from __future__ import unicode_literals
 
+import importlib
 import os
 import re
 
@@ -29,7 +30,7 @@ class Command(BaseCommand):
             raise CommandError("%s does not exist." % filename)
 
         try:
-            import django_reset
+            importlib.import_module('django_reset')
         except ImportError:
             raise CommandError("Before using this command, you need to "
                                "install the 'django-reset' package")
@@ -102,10 +103,10 @@ Type 'yes' to continue, or 'no' to cancel: """)
             transaction.commit()
             transaction.leave_transaction_management()
         except Exception as e:
-            raise CommandError("Problem installing '%s': %s\n" % (filename, e))
-
             if transaction_setup:
                 transaction.rollback()
                 transaction.leave_transaction_management()
+
+            raise CommandError("Problem installing '%s': %s\n" % (filename, e))
 
         self.stdout.write('\nDone.')

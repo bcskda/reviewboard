@@ -1,5 +1,6 @@
 from __future__ import unicode_literals
 
+from django.conf.urls import include, url
 from django.contrib import admin
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
@@ -30,6 +31,7 @@ class RepositoryAdmin(admin.ModelAdmin):
             'fields': (
                 'hosting_type',
                 'hosting_account',
+                'force_authorize',
             ),
             'classes': ('wide',),
         }),
@@ -37,12 +39,6 @@ class RepositoryAdmin(admin.ModelAdmin):
             'fields': (
                 'tool',
                 'repository_plan',
-                'path',
-                'mirror_path',
-                'raw_file_url',
-                'username',
-                'password',
-                'use_ticket_auth',
             ),
             'classes': ('wide',),
         }),
@@ -88,6 +84,7 @@ class RepositoryAdmin(admin.ModelAdmin):
                 return '%s@%s' % (account.username, account.service.name)
 
         return ''
+    hosting.short_description = _('Hosting Service Account')
 
     def inline_actions(self, repository):
         s = ['<div class="admin-inline-actions">']
@@ -118,17 +115,14 @@ class RepositoryAdmin(admin.ModelAdmin):
     _visible.short_description = _('Show')
 
     def get_urls(self):
-        from django.conf.urls import patterns
-
-        return patterns(
-            '',
-
-            (r'^(?P<repository_id>[0-9]+)/hooks-setup/$',
-             self.admin_site.admin_view(self.hooks_setup)),
-
-            (r'^(?P<repository_id>[0-9]+)/rbtools-setup/$',
-             self.admin_site.admin_view(self.rbtools_setup)),
-        ) + super(RepositoryAdmin, self).get_urls()
+        return [
+            url(r'^(?P<repository_id>\d+)/', include([
+                url(r'^hooks-setup/$',
+                    self.admin_site.admin_view(self.hooks_setup)),
+                url(r'^rbtools-setup/$',
+                    self.admin_site.admin_view(self.rbtools_setup)),
+            ])),
+        ] + super(RepositoryAdmin, self).get_urls()
 
     def hooks_setup(self, request, repository_id):
         repository = get_object_or_404(Repository, pk=repository_id)

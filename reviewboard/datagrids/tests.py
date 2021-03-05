@@ -1,20 +1,24 @@
 from __future__ import print_function, unicode_literals
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import AnonymousUser, User
+from django.core.cache import cache
 from django.core.urlresolvers import reverse
 from django.test.client import RequestFactory
 from django.utils import six
+from django.utils.safestring import SafeText
 from djblets.datagrid.grids import DataGrid
 from djblets.siteconfig.models import SiteConfiguration
 from djblets.testing.decorators import add_fixtures
 
-from reviewboard.accounts.models import ReviewRequestVisit
+from reviewboard.accounts.models import Profile, ReviewRequestVisit
 from reviewboard.datagrids.builtin_items import UserGroupsItem, UserProfileItem
-from reviewboard.datagrids.columns import SummaryColumn
+from reviewboard.datagrids.columns import (FullNameColumn, SummaryColumn,
+                                           UsernameColumn)
 from reviewboard.reviews.models import (Group,
                                         ReviewRequest,
                                         ReviewRequestDraft,
                                         Review)
+from reviewboard.site.models import LocalSite
 from reviewboard.testing import TestCase
 
 
@@ -26,7 +30,17 @@ class BaseViewTestCase(TestCase):
         super(BaseViewTestCase, self).setUp()
 
         self.siteconfig = SiteConfiguration.objects.get_current()
-        self.siteconfig.set("auth_require_sitewide_login", False)
+        self._old_auth_require_sitewide_login = \
+            self.siteconfig.get('auth_require_sitewide_login')
+        self.siteconfig.set('auth_require_sitewide_login', False)
+        self.siteconfig.save()
+
+    def tearDown(self):
+        super(BaseViewTestCase, self).tearDown()
+
+        self.siteconfig = SiteConfiguration.objects.get_current()
+        self.siteconfig.set('auth_require_sitewide_login',
+                            self._old_auth_require_sitewide_login)
         self.siteconfig.save()
 
     def _get_context_var(self, response, varname):
@@ -86,10 +100,10 @@ class AllReviewRequestViewTests(BaseViewTestCase):
         """Testing all_review_requests view as anonymous user
         with anonymous access disabled
         """
-        self.siteconfig.set("auth_require_sitewide_login", True)
-        self.siteconfig.save()
+        with self.siteconfig_settings({'auth_require_sitewide_login': True},
+                                      reload_settings=False):
+            response = self.client.get('/r/')
 
-        response = self.client.get('/r/')
         self.assertEqual(response.status_code, 302)
 
     @add_fixtures(['test_scmtools', 'test_users'])
@@ -419,6 +433,37 @@ class DashboardViewTests(BaseViewTestCase):
         self.assertEqual(datagrid.rows[2]['object'].summary, 'Test 1')
 
     @add_fixtures(['test_users'])
+    def test_archived_with_null_extra_data(self):
+        """Testing dashboard view with archived review requests and null
+        extra_data
+        """
+        # We encountered a bug where the archived state in the dashboard was
+        # assuming that Profile.extra_data was always a dictionary. In modern
+        # versions of Review Board, the default value for that field is an
+        # empty dict, but old versions defaulted it to None. This test verifies
+        # that the bug is fixed.
+        archived = self.create_review_request(summary='Test 1', publish=True)
+
+        self.client.login(username='doc', password='doc')
+        user = User.objects.get(username='doc')
+
+        profile = user.get_profile()
+        profile.extra_data = None
+        profile.save(update_fields=('extra_data',))
+
+        archived.target_people.add(user)
+
+        self.client.get(archived.get_absolute_url())
+
+        visit = ReviewRequestVisit.objects.get(user__username=user,
+                                               review_request=archived.id)
+        visit.visibility = ReviewRequestVisit.ARCHIVED
+        visit.save()
+
+        response = self.client.get('/dashboard/', {'show-archived': '0'})
+        self.assertEqual(response.status_code, 200)
+
+    @add_fixtures(['test_users'])
     def test_sidebar(self):
         """Testing dashboard sidebar"""
         self.client.login(username='doc', password='doc')
@@ -509,11 +554,234 @@ class GroupListViewTests(BaseViewTestCase):
     @add_fixtures(['test_users'])
     def test_as_anonymous_and_redirect(self):
         """Testing group_list view with site-wide login enabled"""
-        self.siteconfig.set("auth_require_sitewide_login", True)
-        self.siteconfig.save()
+        with self.siteconfig_settings({'auth_require_sitewide_login': True},
+                                      reload_settings=False):
+            response = self.client.get('/groups/')
 
-        response = self.client.get('/groups/')
         self.assertEqual(response.status_code, 302)
+
+
+class UsersDataGridTests(BaseViewTestCase):
+    """Unit tests for the users view."""
+
+    fixtures = ['test_users']
+
+    def tearDown(self):
+        super(UsersDataGridTests, self).tearDown()
+
+        cache.clear()
+
+    @classmethod
+    def setUpClass(cls):
+        super(UsersDataGridTests, cls).setUpClass()
+
+        cache.clear()
+
+    def test_all_profiles_public(self):
+        """Testing UsersDataGrid when all user profiles are public"""
+        Profile.objects.create(user_id=3)
+
+        self.client.login(username='doc', password='doc')
+
+        with self.assertNumQueries(6):
+            response = self.client.get('/users/?columns=fullname')
+
+        self.assertEqual(response.status_code, 200)
+        datagrid = self._get_context_var(response, 'datagrid')
+        self.assertIsNotNone(datagrid)
+
+        self.assertEqual(len(datagrid.rows), 4)
+
+        for row in datagrid.rows:
+            user = row['object']
+            self.assertInHTML('<a href="/users/%s/">%s</a>'
+                              % (user.username, user.get_full_name()),
+                              row['cells'][0])
+
+    def test_all_profiles_public_anonymous(self):
+        """Testing UsersDataGrid when all user profiles are public and
+        the user is anonymous
+        """
+        Profile.objects.create(user_id=3)
+
+        self.client.logout()
+
+        with self.assertNumQueries(3):
+            response = self.client.get('/users/?columns=fullname')
+
+        self.assertEqual(response.status_code, 200)
+        datagrid = self._get_context_var(response, 'datagrid')
+        self.assertIsNotNone(datagrid)
+
+        self.assertEqual(len(datagrid.rows), 4)
+
+        for row in datagrid.rows:
+            user = row['object']
+            self.assertInHTML('<a href="/users/%s/"></a>' % user.username,
+                              row['cells'][0])
+
+    def test_profile_not_exists(self):
+        """Testing UsersDataGrid when a profile does exist"""
+        Profile.objects.all().update(is_private=True)
+
+        self.client.login(username='doc', password='doc')
+
+        with self.assertNumQueries(11):
+            response = self.client.get('/users/?columns=fullname')
+
+        self.assertEqual(response.status_code, 200)
+
+        datagrid = self._get_context_var(response, 'datagrid')
+        self.assertIsNotNone(datagrid)
+
+        self.assertEqual(len(datagrid.rows), 4)
+
+        rows_by_username = {
+            row['object'].username: row
+            for row in datagrid.rows
+        }
+
+        self.assertInHTML('<a href="/users/admin/"></a>',
+                          rows_by_username['admin']['cells'][0])
+        self.assertInHTML('<a href="/users/doc/">Doc Dwarf</a>',
+                          rows_by_username['doc']['cells'][0])
+        self.assertInHTML('<a href="/users/dopey/">Dopey Dwarf</a>',
+                          rows_by_username['dopey']['cells'][0])
+        self.assertInHTML('<a href="/users/grumpy/"></a>',
+                          rows_by_username['grumpy']['cells'][0])
+
+    def test_all_profiles_private(self):
+        """Testing UsersDataGrid when all user profiles are private"""
+        Profile.objects.create(user_id=3)
+        Profile.objects.all().update(is_private=True)
+
+        self.client.login(username='doc', password='doc')
+
+        with self.assertNumQueries(7):
+            response = self.client.get('/users/?columns=fullname')
+
+        self.assertEqual(response.status_code, 200)
+
+        datagrid = self._get_context_var(response, 'datagrid')
+        self.assertIsNotNone(datagrid)
+
+        self.assertEqual(len(datagrid.rows), 4)
+
+        rows_by_username = {
+            row['object'].username: row
+            for row in datagrid.rows
+        }
+
+        self.assertInHTML('<a href="/users/admin/"></a>',
+                          rows_by_username['admin']['cells'][0])
+        self.assertInHTML('<a href="/users/doc/">Doc Dwarf</a>',
+                          rows_by_username['doc']['cells'][0])
+        self.assertInHTML('<a href="/users/dopey/"></a>',
+                          rows_by_username['dopey']['cells'][0])
+        self.assertInHTML('<a href="/users/grumpy/"></a>',
+                          rows_by_username['grumpy']['cells'][0])
+
+    def test_all_profiles_private_anonymous(self):
+        """Testing UsersDataGrid when all users profiles are private and the
+        user is anonymous
+        """
+        Profile.objects.create(user_id=3)
+        Profile.objects.all().update(is_private=True)
+        self.client.logout()
+
+        with self.assertNumQueries(3):
+            response = self.client.get('/users/?columns=fullname')
+
+        self.assertEqual(response.status_code, 200)
+        datagrid = self._get_context_var(response, 'datagrid')
+        self.assertIsNotNone(datagrid)
+
+        self.assertEqual(len(datagrid.rows), 4)
+
+        for row in datagrid.rows:
+            user = row['object']
+            self.assertInHTML('<a href="/users/%s/"></a>' % user.username,
+                              row['cells'][0])
+
+    def test_all_profiles_private_admin(self):
+        """Testing UsersDataGrid when all users profiles are private and the
+        user is an admin
+        """
+        Profile.objects.create(user_id=3)
+        Profile.objects.all().update(is_private=True)
+        self.client.login(username='admin', password='admin')
+
+        with self.assertNumQueries(6):
+            response = self.client.get('/users/?columns=fullname')
+
+        self.assertEqual(response.status_code, 200)
+        datagrid = self._get_context_var(response, 'datagrid')
+        self.assertIsNotNone(datagrid)
+
+        self.assertEqual(len(datagrid.rows), 4)
+
+        for row in datagrid.rows:
+            user = row['object']
+            self.assertInHTML('<a href="/users/%s/">%s</a>'
+                              % (user.username, user.get_full_name()),
+                              row['cells'][0])
+
+    @add_fixtures(['test_site'])
+    def test_all_profile_private_local_site_admin(self):
+        """Testing UsersDataGrid when all profiles are private for a LocalSite
+        admin
+        """
+        Profile.objects.create(user_id=3)
+        Profile.objects.all().update(is_private=True)
+        self.client.login(username='doc', password='doc')
+
+        with self.assertNumQueries(7):
+            response = self.client.get('/users/?columns=fullname')
+
+        self.assertEqual(response.status_code, 200)
+        datagrid = self._get_context_var(response, 'datagrid')
+        self.assertIsNotNone(datagrid)
+
+        self.assertEqual(len(datagrid.rows), 4)
+
+        rows_by_username = {
+            row['object'].username: row
+            for row in datagrid.rows
+        }
+
+        self.assertInHTML('<a href="/users/admin/">Admin User</a>',
+                          rows_by_username['admin']['cells'][0])
+        self.assertInHTML('<a href="/users/doc/">Doc Dwarf</a>',
+                          rows_by_username['doc']['cells'][0])
+        self.assertInHTML('<a href="/users/dopey/"></a>',
+                          rows_by_username['dopey']['cells'][0])
+        self.assertInHTML('<a href="/users/grumpy/"></a>',
+                          rows_by_username['grumpy']['cells'][0])
+
+    @add_fixtures(['test_site'])
+    def test_all_profile_private_local_site_admin_local_site(self):
+        """Testing UsersDataGrid when all profiles are private for a LocalSite
+        admin on a LocalSite
+        """
+        Profile.objects.create(user_id=3)
+        Profile.objects.all().update(is_private=True)
+        self.client.login(username='doc', password='doc')
+
+        with self.assertNumQueries(9):
+            response = self.client.get(
+                '/s/local-site-2/users/?columns=fullname')
+
+        self.assertEqual(response.status_code, 200)
+        datagrid = self._get_context_var(response, 'datagrid')
+        self.assertIsNotNone(datagrid)
+
+        self.assertEqual(len(datagrid.rows), 2)
+
+        for row in datagrid.rows:
+            user = row['object']
+            self.assertInHTML('<a href="/s/local-site-2/users/%s/">%s</a>'
+                              % (user.username, user.get_full_name()),
+                              row['cells'][0])
 
 
 class SubmitterListViewTests(BaseViewTestCase):
@@ -553,10 +821,10 @@ class SubmitterListViewTests(BaseViewTestCase):
         """Testing users_list view as anonymous with anonymous
         access disabled
         """
-        self.siteconfig.set("auth_require_sitewide_login", True)
-        self.siteconfig.save()
+        with self.siteconfig_settings({'auth_require_sitewide_login': True},
+                                      reload_settings=False):
+            response = self.client.get('/users/')
 
-        response = self.client.get('/users/')
         self.assertEqual(response.status_code, 302)
 
 
@@ -674,6 +942,130 @@ class SubmitterViewTests(BaseViewTestCase):
                          review_request1)
 
 
+class FullNameColumnTests(BaseColumnTestCase):
+    """Testing reviewboard.datagrids.columns.FullNameColumn."""
+
+    column = FullNameColumn()
+
+    def test_render_anonymous(self):
+        """Testing FullNameColumn.render_data when the viewing user is
+        anonymous
+        """
+        user = User.objects.get(username='grumpy')
+        self.request.user = AnonymousUser()
+
+        self.assertEqual(
+            self.column.render_data(self.stateful_column, user),
+            '')
+
+    def test_render_public(self):
+        """Testing FullNameColumn.render_data for a user with a public
+        profile
+        """
+        user = User.objects.get(username='grumpy')
+
+        self.assertEqual(
+            self.column.render_data(self.stateful_column, user),
+            user.get_full_name())
+
+    def test_render_private(self):
+        """Testing FullNameColumn.render_data for a user with a private
+        profile
+        """
+        user = User.objects.get(username='grumpy')
+
+        profile = user.get_profile()
+        profile.is_private = True
+        profile.save(update_fields=('is_private',))
+
+        self.assertEqual(
+            self.column.render_data(self.stateful_column, user),
+            '')
+
+    def test_render_private_admin(self):
+        """Testing FullNameColumn.render_data for a user with a private
+        profile viewed by an admin
+        """
+        user = User.objects.get(username='grumpy')
+
+        profile = user.get_profile()
+        profile.is_private = True
+        profile.save(update_fields=('is_private',))
+
+        self.request.user = User.objects.get(username='admin')
+
+        self.assertEqual(
+            self.column.render_data(self.stateful_column, user),
+            user.get_full_name())
+
+    @add_fixtures(['test_site'])
+    def test_render_private_localsite(self):
+        """Testing FullNameColumn.render_data for a user with a private
+        profile viewed by a fellow LocalSite member
+        """
+        user = User.objects.get(username='grumpy')
+
+        profile = user.get_profile()
+        profile.is_private = True
+        profile.save(update_fields=('is_private',))
+
+        site = LocalSite.objects.get(name='local-site-1')
+        site.users.add(user)
+
+        self.assertEqual(
+            self.column.render_data(self.stateful_column, user),
+            '')
+
+    @add_fixtures(['test_site'])
+    def test_render_private_localsite_admin(self):
+        """Testing FullNameColumn.render_data for a user with a private
+        profile viewed by a LocalSite admin
+        """
+        user = User.objects.get(username='admin')
+
+        profile = user.get_profile()
+        profile.is_private = True
+        profile.save(update_fields=('is_private',))
+
+        self.assertEqual(
+            self.column.render_data(self.stateful_column, user),
+            user.get_full_name())
+
+    @add_fixtures(['test_site'])
+    def test_render_private_localsite_admin_other_site(self):
+        """Testing FullNameColumn.render_data for a user with a private
+        profile viewed by an admin of a LocalSite of which they are not a
+        member
+        """
+        user = User.objects.get(username='grumpy')
+
+        profile = user.get_profile()
+        profile.is_private = True
+        profile.save(update_fields=('is_private',))
+
+        site = LocalSite.objects.create(name='local-site-3')
+        site.users.add(user)
+        site.users.add(self.request.user)
+
+        self.assertEqual(
+            self.column.render_data(self.stateful_column, user),
+            '')
+
+    def test_render_data_escapes_name(self):
+        """Testing FullNameColumn.render_data escapes the full name"""
+        user = User.objects.get(username='grumpy')
+        user.first_name = '<script>alert("unsafe")</script>'
+        user.last_name = '""'
+        user.save(update_fields=('first_name', 'last_name'))
+
+        rendered = self.column.render_data(self.stateful_column, user)
+
+        self.assertIsInstance(rendered, SafeText)
+        self.assertEqual(rendered,
+                         '&lt;script&gt;alert(&quot;unsafe&quot;)'
+                         '&lt;/script&gt; &quot;&quot;')
+
+
 class SummaryColumnTests(BaseColumnTestCase):
     """Testing reviewboard.datagrids.columns.SummaryColumn."""
 
@@ -704,7 +1096,8 @@ class SummaryColumnTests(BaseColumnTestCase):
 
         self.assertEqual(
             self.column.render_data(self.stateful_column, review_request),
-            '<label class="label-draft">Draft</label><span>Summary 1</span>')
+            '<label class="label-draft">Draft</label>'
+            '<span>Summary 1</span>')
 
     def test_render_data_with_draft_summary(self):
         """Testing SummaryColumn.render_data with draft summary"""
@@ -838,3 +1231,27 @@ class SummaryColumnTests(BaseColumnTestCase):
             self.column.render_data(self.stateful_column, review_request),
             '<label class="label-discarded">Discarded</label>'
             '<span>Summary 1</span>')
+
+
+class UsernameColumnTests(BaseColumnTestCase):
+    """Tests for reviewboard.datagrids.columns.UsernameColumn."""
+
+    column = UsernameColumn()
+
+    @add_fixtures(['test_site'])
+    def test_render(self):
+        """Tesing UsernameColumn.render_cell"""
+        user = User.objects.get(username='doc')
+        self.assertIn(
+            'href="/users/doc/"',
+            self.column.render_cell(self.stateful_column, user, None))
+
+    @add_fixtures(['test_site'])
+    def test_render_local_site(self):
+        """Testing UsernameColumn.render_cell on a LocalSite"""
+        self.request._local_site_name = self.local_site_name
+        user = User.objects.get(username='doc')
+
+        self.assertIn(
+            'href="/s/%s/users/doc/"' % self.local_site_name,
+            self.column.render_cell(self.stateful_column, user, None))

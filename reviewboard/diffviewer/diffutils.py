@@ -1,7 +1,10 @@
 from __future__ import unicode_literals
 
+import fnmatch
+import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from difflib import SequenceMatcher
@@ -13,14 +16,26 @@ from djblets.log import log_timed
 from djblets.siteconfig.models import SiteConfiguration
 from djblets.util.contextmanagers import controlled_subprocess
 
+from reviewboard.diffviewer.errors import PatchError
 from reviewboard.scmtools.core import PRE_CREATION, HEAD
 
+
+#: A regex for matching a diff chunk header.
+#:
+#: Version Added:
+#:     3.0.18
+CHUNK_RANGE_RE = re.compile(
+    r'^@@ -(?P<orig_start>\d+)(,(?P<orig_len>\d+))? '
+    r'\+(?P<modified_start>\d+)(,(?P<modified_len>\d+))? @@',
+    re.M)
 
 NEWLINE_CONVERSION_RE = re.compile(r'\r(\r?\n)?')
 NEWLINE_RE = re.compile(r'(?:\n|\r(?:\r?\n)?)')
 
 ALPHANUM_RE = re.compile(r'\w')
 WHITESPACE_RE = re.compile(r'\s')
+
+_PATCH_GARBAGE_INPUT = 'patch: **** Only garbage was found in the patch input.'
 
 
 def convert_to_unicode(s, encoding_list):
@@ -116,68 +131,94 @@ def split_line_endings(data):
     return lines
 
 
-def patch(diff, file, filename, request=None):
-    """Apply a diff to a file.  Delegates out to `patch` because noone
-       except Larry Wall knows how to patch."""
+def patch(diff, orig_file, filename, request=None):
+    """Apply a diff to a file.
 
-    log_timer = log_timed("Patching file %s" % filename,
-                          request=request)
+    This delegates out to ``patch`` because noone except Larry Wall knows how
+    to patch.
+
+    Args:
+        diff (bytes):
+            The contents of the diff to apply.
+
+        orig_file (bytes):
+            The contents of the original file.
+
+        filename (unicode):
+            The name of the file being patched.
+
+        request (django.http.HttpRequest, optional):
+            The HTTP request, for use in logging.
+
+    Returns:
+        bytes:
+        The contents of the patched file.
+
+    Raises:
+        reviewboard.diffutils.errors.PatchError:
+            An error occurred when trying to apply the patch.
+    """
+    log_timer = log_timed('Patching file %s' % filename, request=request)
 
     if not diff.strip():
         # Someone uploaded an unchanged file. Return the one we're patching.
-        return file
+        return orig_file
 
     # Prepare the temporary directory if none is available
     tempdir = tempfile.mkdtemp(prefix='reviewboard.')
 
-    (fd, oldfile) = tempfile.mkstemp(dir=tempdir)
-    f = os.fdopen(fd, "w+b")
-    f.write(convert_line_endings(file))
-    f.close()
+    try:
+        orig_file = convert_line_endings(orig_file)
+        diff = convert_line_endings(diff)
 
-    diff = convert_line_endings(diff)
+        (fd, oldfile) = tempfile.mkstemp(dir=tempdir)
+        f = os.fdopen(fd, 'w+b')
+        f.write(orig_file)
+        f.close()
 
-    newfile = '%s-new' % oldfile
+        newfile = '%s-new' % oldfile
 
-    process = subprocess.Popen(['patch', '-o', newfile, oldfile],
-                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, cwd=tempdir)
+        process = subprocess.Popen(['patch', '-o', newfile, oldfile],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, cwd=tempdir)
 
-    with controlled_subprocess("patch", process) as p:
-        stdout, stderr = p.communicate(diff)
-        failure = p.returncode
+        with controlled_subprocess('patch', process) as p:
+            stdout, stderr = p.communicate(diff)
+            failure = p.returncode
 
-    if failure:
-        absolute_path = os.path.join(tempdir, os.path.basename(filename))
-        with open("%s.diff" % absolute_path, 'w') as f:
-            f.write(diff)
+        try:
+            with open(newfile, 'rb') as f:
+                new_file = f.read()
+        except Exception:
+            new_file = None
 
+        if failure:
+            rejects_file = '%s.rej' % newfile
+
+            try:
+                with open(rejects_file, 'rb') as f:
+                    rejects = f.read()
+            except Exception:
+                rejects = None
+
+            error_output = stderr.strip() or stdout.strip()
+
+            # Munge the output to show the filename instead of
+            # randomly-generated tempdir locations.
+            base_filename = os.path.basename(filename)
+            error_output = (
+                error_output
+                .replace(rejects_file, '%s.rej' % base_filename)
+                .replace(oldfile, base_filename)
+            )
+
+            raise PatchError(filename, error_output, orig_file, new_file,
+                             diff, rejects)
+
+        return new_file
+    finally:
+        shutil.rmtree(tempdir)
         log_timer.done()
-
-        # FIXME: This doesn't provide any useful error report on why the patch
-        # failed to apply, which makes it hard to debug.  We might also want to
-        # have it clean up if DEBUG=False
-        raise Exception(
-            _("The patch to '%(filename)s' didn't apply cleanly. The "
-              "temporary files have been left in '%(tempdir)s' for debugging "
-              "purposes.\n"
-              "`patch` returned: %(output)s")
-            % {
-                'filename': filename,
-                'tempdir': tempdir,
-                'output': stderr,
-            })
-
-    with open(newfile, "r") as f:
-        data = f.read()
-
-    os.unlink(oldfile)
-    os.unlink(newfile)
-    os.rmdir(tempdir)
-
-    log_timer.done()
-
-    return data
 
 
 def get_original_file(filediff, request, encoding_list):
@@ -187,13 +228,36 @@ def get_original_file(filediff, request, encoding_list):
 
     SCM exceptions are passed back to the caller.
     """
-    data = b""
+    data = b''
+    extra_data = filediff.extra_data or {}
 
-    if not filediff.is_new:
+    # If the file has a parent source filename/revision recorded, we're
+    # going to need to fetch that, since that'll be (potentially) the
+    # latest commit in the repository.
+    #
+    # This information was added in Review Board 3.0.19. Prior versions
+    # stored the parent source revision as filediff.source_revision
+    # (rather than leaving that as identifying information for the actual
+    # file being shown in the review). It did not store the parent
+    # filename at all (which impacted diffs that contained a moved/renamed
+    # file on any type of repository that required a filename for lookup,
+    # such as Mercurial -- Git was not affected, since it only needs
+    # blob SHAs).
+    #
+    # If we're not working with a parent diff, or this is a FileDiff
+    # with legacy parent diff information, we just use the FileDiff
+    # FileDiff filename/revision fields as normal.
+    source_filename = extra_data.get('parent_source_filename',
+                                     filediff.source_file)
+    source_revision = extra_data.get('parent_source_revision',
+                                     filediff.source_revision)
+
+    if source_revision != PRE_CREATION:
         repository = filediff.diffset.repository
+
         data = repository.get_file(
-            filediff.source_file,
-            filediff.source_revision,
+            source_filename,
+            source_revision,
             base_commit_id=filediff.diffset.base_commit_id,
             request=request)
 
@@ -217,19 +281,49 @@ def get_original_file(filediff, request, encoding_list):
 
     # If there's a parent diff set, apply it to the buffer.
     if (filediff.parent_diff and
-        (not filediff.extra_data or
-         not filediff.extra_data.get('parent_moved', False))):
-        data = patch(filediff.parent_diff, data, filediff.source_file,
-                     request)
+        not filediff.is_parent_diff_empty(cache_only=True)):
+        try:
+            data = patch(filediff.parent_diff, data, source_filename, request)
+        except PatchError as e:
+            # patch(1) cannot process diff files that contain no diff sections.
+            # We are going to check and see if the parent diff contains no diff
+            # chunks.
+            if (e.error_output == _PATCH_GARBAGE_INPUT and
+                not filediff.is_parent_diff_empty()):
+                raise
 
     return data
 
 
-def get_patched_file(buffer, filediff, request):
-    tool = filediff.diffset.repository.get_scmtool()
-    diff = tool.normalize_patch(filediff.diff, filediff.source_file,
-                                filediff.source_revision)
-    return patch(diff, buffer, filediff.dest_file, request)
+def get_patched_file(source_data, filediff, request=None):
+    """Return the patched version of a file.
+
+    This will normalize the patch, applying any changes needed for the
+    repository, and then patch the provided data with the patch contents.
+
+    Args:
+        source_data (bytes):
+            The file contents to patch.
+
+        filediff (reviewboard.diffviewer.models.filediff.FileDiff):
+            The FileDiff representing the patch.
+
+        request (django.http.HttpClient, optional):
+            The HTTP request from the client.
+
+    Returns:
+        bytes:
+        The patched file contents.
+    """
+    diff = filediff.diffset.repository.normalize_patch(
+        patch=filediff.diff,
+        filename=filediff.source_file,
+        revision=filediff.source_revision)
+
+    return patch(diff=diff,
+                 orig_file=source_data,
+                 filename=filediff.dest_file,
+                 request=request)
 
 
 def get_revision_str(revision):
@@ -241,8 +335,254 @@ def get_revision_str(revision):
         return _("Revision %s") % revision
 
 
-def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
-    """Generates a list of files that will be displayed in a diff.
+def get_filenames_match_patterns(patterns, filenames):
+    """Return whether any of the filenames match any of the patterns.
+
+    This is used to compare a list of filenames to a list of
+    :py:mod:`patterns <fnmatch>`. The patterns are case-sensitive.
+
+    Args:
+        patterns (list of unicode):
+            The list of patterns to match against.
+
+        filename (list of unicode):
+            The list of filenames.
+
+    Returns:
+        bool:
+        ``True`` if any filenames match any patterns. ``False`` if none match.
+    """
+    for pattern in patterns:
+        for filename in filenames:
+            if fnmatch.fnmatchcase(filename, pattern):
+                return True
+
+    return False
+
+
+def get_matched_interdiff_files(tool, filediffs, interfilediffs):
+    """Generate pairs of matched files for display in interdiffs.
+
+    This compares a list of filediffs and a list of interfilediffs, attempting
+    to best match up the files in both for display in the diff viewer.
+
+    This will prioritize matches that share a common source filename,
+    destination filename, and new/deleted state. Failing that, matches that
+    share a common source filename are paired off.
+
+    Any entries in ``interfilediffs` that don't have any match in ``filediffs``
+    are considered new changes in the interdiff, and any entries in
+    ``filediffs`` that don't have entries in ``interfilediffs`` are considered
+    reverted changes.
+
+    Args:
+        tool (reviewboard.scmtools.core.SCMTool)
+            The tool used for all these diffs.
+
+        filediffs (list of reviewboard.diffviewer.models.FileDiff):
+            The list of filediffs on the left-hand side of the diff range.
+
+        interfilediffs (list of reviewboard.diffviewer.models.FileDiff):
+            The list of filediffs on the right-hand side of the diff range.
+
+    Yields:
+        tuple:
+        A paired off filediff match. This is a tuple containing two entries,
+        each a :py:class:`~reviewboard.diffviewer.models.FileDiff` or ``None``.
+    """
+    parser = tool.get_parser('')
+    _normfile = parser.normalize_diff_filename
+
+    def _make_detail_key(filediff):
+        return (_normfile(filediff.source_file),
+                _normfile(filediff.dest_file),
+                filediff.is_new,
+                filediff.deleted)
+
+    # In order to support interdiffs properly, we need to display diffs on
+    # every file in the union of both diffsets. Iterating over one diffset
+    # or the other doesn't suffice. We also need to be careful to handle
+    # things like renamed/moved files, particularly when there are multiple
+    # of them with the same source filename.
+    #
+    # This is done in four stages:
+    #
+    # 1. Build up maps and a set for keeping track of possible
+    #    interfilediff candidates for future stages.
+    #
+    # 2. Look for any files that are common between the two diff revisions
+    #    that have the same source filename, same destination filename, and
+    #    the same new/deleted states.
+    #
+    #    Unless a diff is hand-crafted, there should never be more than one
+    #    match here.
+    #
+    # 3. Look for any files that are common between the two diff revisions
+    #    that have the same source filename and new/deleted state. These will
+    #    ignore the destination filename, helping to match cases where diff 1
+    #    modifies a file and diff 2 modifies + renames/moves it.
+    #
+    # 4. Add any remaining files from diff 2 that weren't found in diff 1.
+    #
+    # We don't have to worry about things like the order of matched diffs.
+    # That will be taken care of at the end of the function.
+    detail_interdiff_map = {}
+    simple_interdiff_map = {}
+    remaining_interfilediffs = set()
+
+    # Stage 1: Build up the maps/set of interfilediffs.
+    for interfilediff in interfilediffs:
+        source_file = _normfile(interfilediff.source_file)
+        detail_key = _make_detail_key(interfilediff)
+
+        # We'll store this interfilediff in three spots: The set of
+        # all interfilediffs, the detail map (for source + dest +
+        # is_new file comparisons), and the simple map (for direct
+        # source_file comparisons). These will be used for the
+        # different matching stages.
+        remaining_interfilediffs.add(interfilediff)
+        detail_interdiff_map[detail_key] = interfilediff
+        simple_interdiff_map.setdefault(source_file, set()).add(interfilediff)
+
+    # Stage 2: Look for common files with the same source/destination
+    #          filenames and new/deleted states.
+    #
+    # There will only be one match per filediff, at most. Any filediff or
+    # interfilediff that we find will be excluded from future stages.
+    remaining_filediffs = []
+
+    for filediff in filediffs:
+        source_file = _normfile(filediff.source_file)
+
+        try:
+            interfilediff = detail_interdiff_map.pop(
+                _make_detail_key(filediff))
+        except KeyError:
+            remaining_filediffs.append(filediff)
+            continue
+
+        yield filediff, interfilediff
+
+        if interfilediff:
+            remaining_interfilediffs.discard(interfilediff)
+
+            try:
+                simple_interdiff_map.get(source_file, []).remove(interfilediff)
+            except ValueError:
+                pass
+
+    # Stage 3: Look for common files with the same source/destination
+    #          filenames (when they differ).
+    #
+    # Any filediff from diff 1 not already processed in stage 2 will be
+    # processed here. We'll look for any filediffs from diff 2 that were
+    # moved/copied from the same source to the same destination. This is one
+    # half of the detailed file state we checked in stage 2.
+    new_remaining_filediffs = []
+
+    for filediff in remaining_filediffs:
+        source_file = _normfile(filediff.source_file)
+        found_interfilediffs = [
+            temp_interfilediff
+            for temp_interfilediff in simple_interdiff_map.get(source_file, [])
+            if (temp_interfilediff.dest_file == filediff.dest_file and
+                filediff.source_file != filediff.dest_file)
+        ]
+
+        if found_interfilediffs:
+            remaining_interfilediffs.difference_update(found_interfilediffs)
+
+            for interfilediff in found_interfilediffs:
+                simple_interdiff_map[source_file].remove(interfilediff)
+                yield filediff, interfilediff
+        else:
+            new_remaining_filediffs.append(filediff)
+
+    remaining_filediffs = new_remaining_filediffs
+
+    # Stage 4: Look for common files with the same source filenames and
+    #          new/deleted states.
+    #
+    # Any filediff from diff 1 not already processed in stage 3 will be
+    # processed here. We'll look for any filediffs from diff 2 that match
+    # the source filename and the new/deleted state. Any that we find will
+    # be matched up.
+    new_remaining_filediffs = []
+
+    for filediff in remaining_filediffs:
+        source_file = _normfile(filediff.source_file)
+        found_interfilediffs = [
+            temp_interfilediff
+            for temp_interfilediff in simple_interdiff_map.get(source_file, [])
+            if (temp_interfilediff.is_new == filediff.is_new and
+                temp_interfilediff.deleted == filediff.deleted)
+        ]
+
+        if found_interfilediffs:
+            remaining_interfilediffs.difference_update(found_interfilediffs)
+
+            for interfilediff in found_interfilediffs:
+                simple_interdiff_map[source_file].remove(interfilediff)
+                yield filediff, interfilediff
+        else:
+            new_remaining_filediffs.append(filediff)
+
+    remaining_filediffs = new_remaining_filediffs
+
+    # Stage 5: Look for common files with the same source filenames and
+    #          compatible new/deleted states.
+    #
+    # This will help catch files that were marked as new in diff 1 but not in
+    # diff 2, or deleted in diff 2 but not in diff 1. (The inverse for either
+    # is NOT matched!). This is important because if a file is introduced in a
+    # parent diff, the file can end up showing up as new itself (which is a
+    # separate bug).
+    #
+    # Even if that bug did not exist, it's still possible for a file to be new
+    # in one revision but committed separately (by that user or another), so we
+    # need these matched.
+    #
+    # Any files not found with a matching interdiff will simply be yielded.
+    # This is the last stage dealing with the filediffs in the first revision.
+    for filediff in remaining_filediffs:
+        source_file = _normfile(filediff.source_file)
+        found_interfilediffs = [
+            temp_interfilediff
+            for temp_interfilediff in simple_interdiff_map.get(source_file, [])
+            if (((filediff.is_new or not temp_interfilediff.is_new) or
+                 (not filediff.is_new and temp_interfilediff.is_new and
+                  filediff.dest_detail == temp_interfilediff.dest_detail)) and
+                (not filediff.deleted or temp_interfilediff.deleted))
+        ]
+
+        if found_interfilediffs:
+            remaining_interfilediffs.difference_update(found_interfilediffs)
+
+            for interfilediff in found_interfilediffs:
+                # NOTE: If more stages are ever added that deal with
+                #       simple_interdiff_map, then we'll need to remove
+                #       interfilediff from that map here.
+                yield filediff, interfilediff
+        else:
+            yield filediff, None
+
+    # Stage 6: Add any remaining files from the interdiff.
+    #
+    # We've removed everything that we've already found.  What's left are
+    # interdiff files that are new. They have no file to diff against.
+    #
+    # The end result is going to be a view that's the same as when you're
+    # viewing a standard diff. As such, we can pretend the interdiff is
+    # the source filediff and not specify an interdiff. Keeps things
+    # simple, code-wise, since we really have no need to special-case
+    # this.
+    for interfilediff in remaining_interfilediffs:
+        yield None, interfilediff
+
+
+def get_diff_files(diffset, filediff=None, interdiffset=None,
+                   interfilediff=None, request=None, filename_patterns=None):
+    """Return a list of files that will be displayed in a diff.
 
     This will go through the given diffset/interdiffset, or a given filediff
     within that diffset, and generate the list of files that will be
@@ -250,8 +590,34 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
     such as the index, original/modified names, revisions, associated
     filediffs/diffsets, and so on.
 
-    This can be used along with populate_diff_chunks to build a full list
-    containing all diff chunks used for rendering a side-by-side diff.
+    This can be used along with :py:func:`populate_diff_chunks` to build a full
+    list containing all diff chunks used for rendering a side-by-side diff.
+
+    Args:
+        diffset (reviewboard.diffviewer.models.DiffSet):
+            The diffset containing the files to return.
+
+        filediff (reviewboard.diffviewer.models.FileDiff, optional):
+            A specific file in the diff to return information for.
+
+        interdiffset (reviewboard.diffviewer.models.DiffSet, optional):
+            A second diffset used for an interdiff range.
+
+        interfilediff (reviewboard.diffviewer.models.FileDiff, optional):
+            A second specific file in ``interdiffset`` used to return
+            information for. This should be provided if ``filediff`` and
+            ``interdiffset`` are both provided. If it's ``None`` in this
+            case, then the diff will be shown as reverted for this file.
+
+        filename_patterns (list of unicode, optional):
+            A list of filenames or :py:mod:`patterns <fnmatch>` used to
+            limit the results. Each of these will be matched against the
+            original and modified file of diffs and interdiffs.
+
+    Returns:
+        list of dict:
+        A list of dictionaries containing information on the files to show
+        in the diff, in the order in which they would be shown.
     """
     if filediff:
         filediffs = [filediff]
@@ -267,7 +633,7 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
                                   (diffset.id, filediff.id),
                                   request=request)
     else:
-        filediffs = diffset.files.select_related().all()
+        filediffs = list(diffset.files.select_related().all())
 
         if interdiffset:
             log_timer = log_timed("Generating diff file info for "
@@ -279,59 +645,53 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
                                   "diffset id %s" % diffset.id,
                                   request=request)
 
-    # A map used to quickly look up the equivalent interfilediff given a
-    # source file.
-    interdiff_map = {}
-
     # Filediffs that were created with leading slashes stripped won't match
     # those created with them present, so we need to compare them without in
     # order for the filenames to match up properly.
     tool = diffset.repository.get_scmtool()
-    parser = tool.get_parser('')
-
-    def _normfile(filename):
-        return parser.normalize_diff_filename(filename)
 
     if interdiffset:
-        for interfilediff in interdiffset.files.all():
-            interfilediff_source_file = _normfile(interfilediff.source_file)
+        if not filediff:
+            interfilediffs = list(interdiffset.files.all())
+        elif interfilediff:
+            interfilediffs = [interfilediff]
+        else:
+            interfilediffs = []
 
-            if (not filediff or
-                _normfile(filediff.source_file) == interfilediff_source_file):
-                interdiff_map[interfilediff_source_file] = interfilediff
+        filediff_parts = []
+        matched_filediffs = get_matched_interdiff_files(
+            tool=tool,
+            filediffs=filediffs,
+            interfilediffs=interfilediffs)
 
-    # In order to support interdiffs properly, we need to display diffs
-    # on every file in the union of both diffsets. Iterating over one diffset
-    # or the other doesn't suffice.
-    #
-    # We build a list of parts containing the source filediff, the interdiff
-    # filediff (if specified), and whether to force showing an interdiff
-    # (in the case where a file existed in the source filediff but was
-    # reverted in the interdiff).
-    has_interdiffset = interdiffset is not None
+        for temp_filediff, temp_interfilediff in matched_filediffs:
+            if temp_filediff:
+                filediff_parts.append((temp_filediff, temp_interfilediff,
+                                       True))
+            elif temp_interfilediff:
+                filediff_parts.append((temp_interfilediff, None, False))
+            else:
+                logging.error(
+                    'get_matched_interdiff_files returned an entry with an '
+                    'empty filediff and interfilediff for diffset=%r, '
+                    'interdiffset=%r, filediffs=%r, interfilediffs=%r',
+                    diffset, interdiffset, filediffs, interfilediffs)
 
-    filediff_parts = [
-        (temp_filediff,
-         interdiff_map.pop(_normfile(temp_filediff.source_file), None),
-         has_interdiffset)
-        for temp_filediff in filediffs
-    ]
-
-    if interdiffset:
-        # We've removed everything in the map that we've already found.
-        # What's left are interdiff files that are new. They have no file
-        # to diff against.
-        #
-        # The end result is going to be a view that's the same as when you're
-        # viewing a standard diff. As such, we can pretend the interdiff is
-        # the source filediff and not specify an interdiff. Keeps things
-        # simple, code-wise, since we really have no need to special-case
-        # this.
-        filediff_parts += [
-            (interdiff, None, False)
-            for interdiff in six.itervalues(interdiff_map)
+                raise ValueError(
+                    'Internal error: get_matched_interdiff_files returned an '
+                    'entry with an empty filediff and interfilediff! Please '
+                    'report this along with information from the server '
+                    'error log.')
+    else:
+        # We're not working with interdiffs. We can easily create the
+        # filediff_parts directly.
+        filediff_parts = [
+            (temp_filediff, None, False)
+            for temp_filediff in filediffs
         ]
 
+    # Now that we have all the bits and pieces we care about for the filediffs,
+    # we can start building information about each entry on the diff viewer.
     files = []
 
     for parts in filediff_parts:
@@ -354,28 +714,47 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
 
             source_revision = _("Diff Revision %s") % diffset.revision
 
-            if not interfilediff and force_interdiff:
-                dest_revision = (_("Diff Revision %s - File Reverted") %
-                                 interdiffset.revision)
-            else:
-                dest_revision = _("Diff Revision %s") % interdiffset.revision
         else:
             source_revision = get_revision_str(filediff.source_revision)
 
-            if newfile:
-                dest_revision = _("New File")
+        if interfilediff:
+            dest_revision = _('Diff Revision %s') % interdiffset.revision
+        else:
+            if force_interdiff:
+                dest_revision = (_('Diff Revision %s - File Reverted') %
+                                 interdiffset.revision)
+            elif newfile:
+                dest_revision = _('New File')
             else:
-                dest_revision = _("New Change")
+                dest_revision = _('New Change')
+
+        source_extra_data = filediff.extra_data
 
         if interfilediff:
             raw_depot_filename = filediff.dest_file
             raw_dest_filename = interfilediff.dest_file
+            dest_extra_data = interfilediff.extra_data
         else:
             raw_depot_filename = filediff.source_file
             raw_dest_filename = filediff.dest_file
+            dest_extra_data = filediff.extra_data
 
-        depot_filename = tool.normalize_path_for_display(raw_depot_filename)
-        dest_filename = tool.normalize_path_for_display(raw_dest_filename)
+        depot_filename = tool.normalize_path_for_display(
+            raw_depot_filename,
+            extra_data=source_extra_data)
+        dest_filename = tool.normalize_path_for_display(
+            raw_dest_filename,
+            extra_data=dest_extra_data)
+
+        if filename_patterns:
+            if dest_filename == depot_filename:
+                filenames = [dest_filename]
+            else:
+                filenames = [dest_filename, depot_filename]
+
+            if not get_filenames_match_patterns(patterns=filename_patterns,
+                                                filenames=filenames):
+                continue
 
         f = {
             'depot_filename': depot_filename,
@@ -391,6 +770,7 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
             'copied': filediff.copied,
             'moved_or_copied': filediff.moved or filediff.copied,
             'newfile': newfile,
+            'is_symlink': filediff.extra_data.get('is_symlink', False),
             'index': len(files),
             'chunks_loaded': False,
             'is_new_file': (newfile and not interfilediff and
@@ -407,7 +787,9 @@ def get_diff_files(diffset, filediff=None, interdiffset=None, request=None):
     if len(files) == 1:
         return files
     else:
-        return get_sorted_filediffs(files, key=lambda f: f['filediff'])
+        return get_sorted_filediffs(
+            files,
+            key=lambda f: f['interfilediff'] or f['filediff'])
 
 
 def populate_diff_chunks(files, enable_syntax_highlighting=True,
@@ -476,6 +858,7 @@ def get_file_from_filediff(context, filediff, interfilediff):
 
         request = context.get('request', None)
         files = get_diff_files(filediff.diffset, filediff, interdiffset,
+                               interfilediff=interfilediff,
                                request=request)
         populate_diff_chunks(files, get_enable_highlighting(context['user']),
                              request=request)
@@ -764,8 +1147,8 @@ def get_sorted_filediffs(filediffs, key=None):
     in ascending order.
 
     If two files have the same base path and base name, we'll sort by the
-    extension in descending order. This will make *.h sort ahead of *.c/cpp,
-    for example.
+    extension in descending order. This will make :file:`*.h` sort ahead of
+    :file:`*.c`/:file:`*.cpp`, for example.
 
     If the list being passed in is actually not a list of FileDiffs, it
     must provide a callable ``key`` parameter that will return a FileDiff
@@ -792,7 +1175,7 @@ def get_sorted_filediffs(filediffs, key=None):
         if key:
             filediff = key(filediff)
 
-        filename = filediff.source_file
+        filename = filediff.dest_file
         i = filename.rfind('/')
 
         if i == -1:
@@ -801,3 +1184,342 @@ def get_sorted_filediffs(filediffs, key=None):
             return filename[:i], filename[i + 1:]
 
     return sorted(filediffs, cmp=cmp_filediffs, key=make_key)
+
+
+def get_displayed_diff_line_ranges(chunks, first_vlinenum, last_vlinenum):
+    """Return the displayed line ranges based on virtual line numbers.
+
+    This takes the virtual line numbers (the index in the side-by-side diff
+    lines) and returns the human-readable line numbers, the chunks they're in,
+    and mapped virtual line numbers.
+
+    A virtual line range may start or end in a chunk not containing displayed
+    line numbers (such as an "original" range starting/ending in an "insert"
+    chunk). The resulting displayed line ranges will exclude these chunks.
+
+    Args:
+        chunks (list of dict):
+            The list of chunks for the diff.
+
+        first_vlinenum (int):
+            The first virtual line number. This uses 1-based indexes.
+
+        last_vlinenum (int):
+            The last virtual line number. This uses 1-based indexes.
+
+    Returns:
+        tuple:
+        A tuple of displayed line range information, containing 2 items.
+
+        Each item will either be a dictionary of information, or ``None``
+        if there aren't any displayed lines to show.
+
+        The dictionary contains the following keys:
+
+        ``display_range``:
+            A tuple containing the displayed line range.
+
+        ``virtual_range``:
+            A tuple containing the virtual line range that ``display_range``
+            maps to.
+
+        ``chunk_range``:
+            A tuple containing the beginning/ending chunks that
+            ``display_range`` maps to.
+
+    Raises:
+        ValueError:
+            The range provided was invalid.
+    """
+    if first_vlinenum < 0:
+        raise ValueError('first_vlinenum must be >= 0')
+
+    if last_vlinenum < first_vlinenum:
+        raise ValueError('last_vlinenum must be >= first_vlinenum')
+
+    orig_start_linenum = None
+    orig_end_linenum = None
+    orig_start_chunk = None
+    orig_last_valid_chunk = None
+    patched_start_linenum = None
+    patched_end_linenum = None
+    patched_start_chunk = None
+    patched_last_valid_chunk = None
+
+    for chunk in chunks:
+        lines = chunk['lines']
+
+        if not lines:
+            logging.warning('get_displayed_diff_line_ranges: Encountered '
+                            'empty chunk %r',
+                            chunk)
+            continue
+
+        first_line = lines[0]
+        last_line = lines[-1]
+        chunk_first_vlinenum = first_line[0]
+        chunk_last_vlinenum = last_line[0]
+
+        if first_vlinenum > chunk_last_vlinenum:
+            # We're too early. There won't be anything of interest here.
+            continue
+
+        if last_vlinenum < chunk_first_vlinenum:
+            # We're not going to find anything useful at this point, so bail.
+            break
+
+        change = chunk['change']
+        valid_for_orig = (change != 'insert' and first_line[1])
+        valid_for_patched = (change != 'delete' and first_line[4])
+
+        if valid_for_orig:
+            orig_last_valid_chunk = chunk
+
+            if not orig_start_chunk:
+                orig_start_chunk = chunk
+
+        if valid_for_patched:
+            patched_last_valid_chunk = chunk
+
+            if not patched_start_chunk:
+                patched_start_chunk = chunk
+
+        if chunk_first_vlinenum <= first_vlinenum <= chunk_last_vlinenum:
+            # This chunk contains the first line that can possibly be used for
+            # the comment range. We know the start and end virtual line numbers
+            # in the range, so we can compute the proper offset.
+            offset = first_vlinenum - chunk_first_vlinenum
+
+            if valid_for_orig:
+                orig_start_linenum = first_line[1] + offset
+                orig_start_vlinenum = first_line[0] + offset
+
+            if valid_for_patched:
+                patched_start_linenum = first_line[4] + offset
+                patched_start_vlinenum = first_line[0] + offset
+        elif first_vlinenum < chunk_first_vlinenum:
+            # One side of the the comment range may not have started in a valid
+            # chunk (this would happen if a comment began in an insert or
+            # delete chunk). If that happened, we may not have been able to set
+            # the beginning of the range in the condition above. Check for this
+            # and try setting it now.
+            if orig_start_linenum is None and valid_for_orig:
+                orig_start_linenum = first_line[1]
+                orig_start_vlinenum = first_line[0]
+
+            if patched_start_linenum is None and valid_for_patched:
+                patched_start_linenum = first_line[4]
+                patched_start_vlinenum = first_line[0]
+
+    # Figure out the end ranges, now that we know the valid ending chunks of
+    # each. We're going to try to get the line within the chunk that represents
+    # the end, if within the chunk, capping it to the last line in the chunk.
+    #
+    # If a particular range did not have a valid chunk anywhere in that range,
+    # we're going to invalidate the entire range.
+    if orig_last_valid_chunk:
+        lines = orig_last_valid_chunk['lines']
+        first_line = lines[0]
+        last_line = lines[-1]
+        offset = last_vlinenum - first_line[0]
+
+        orig_end_linenum = min(last_line[1], first_line[1] + offset)
+        orig_end_vlinenum = min(last_line[0], first_line[0] + offset)
+
+        assert orig_end_linenum >= orig_start_linenum
+        assert orig_end_vlinenum >= orig_start_vlinenum
+
+        orig_range_info = {
+            'display_range': (orig_start_linenum, orig_end_linenum),
+            'virtual_range': (orig_start_vlinenum, orig_end_vlinenum),
+            'chunk_range': (orig_start_chunk, orig_last_valid_chunk),
+        }
+    else:
+        orig_range_info = None
+
+    if patched_last_valid_chunk:
+        lines = patched_last_valid_chunk['lines']
+        first_line = lines[0]
+        last_line = lines[-1]
+        offset = last_vlinenum - first_line[0]
+
+        patched_end_linenum = min(last_line[4], first_line[4] + offset)
+        patched_end_vlinenum = min(last_line[0], first_line[0] + offset)
+
+        assert patched_end_linenum >= patched_start_linenum
+        assert patched_end_vlinenum >= patched_start_vlinenum
+
+        patched_range_info = {
+            'display_range': (patched_start_linenum, patched_end_linenum),
+            'virtual_range': (patched_start_vlinenum, patched_end_vlinenum),
+            'chunk_range': (patched_start_chunk, patched_last_valid_chunk),
+        }
+    else:
+        patched_range_info = None
+
+    return orig_range_info, patched_range_info
+
+
+def get_diff_data_chunks_info(diff):
+    """Return information on each chunk in a diff.
+
+    This will scan through a unified diff file, looking for each chunk in the
+    diff and returning information on their ranges and lines of context. This
+    can be used to generate statistics on diffs and help map changed regions
+    in diffs to lines of source files.
+
+    Version Added:
+        3.0.18
+
+    Args:
+        diff (bytes):
+            The diff data to scan.
+
+    Returns:
+        list of dict:
+        A list of chunk information dictionaries. Each entry has an ``orig``
+        and ``modified` dictionary containing the following keys:
+
+        ``chunk_start`` (``int``):
+            The starting line number of the chunk shown in the diff, including
+            any lines of context. This is 0-based.
+
+        ``chunk_len`` (``int``):
+            The length of the chunk shown in the diff, including any lines of
+            context.
+
+        ``changes_start`` (``int``):
+            The starting line number of a range of changes shown in a chunk in
+            the diff.
+            This is after any lines of context and is 0-based.
+
+        ``changes_len`` (``int``):
+            The length of the changes shown in a chunk in the diff, excluding
+            any lines of context.
+
+        ``pre_lines_of_context`` (``int``):
+            The number of lines of context before any changes in a chunk. If
+            the chunk doesn't have any changes, this will contain all lines of
+            context otherwise shown around changes in the other region in this
+            entry.
+
+        ``post_lines_of_context`` (``int``):
+            The number of lines of context after any changes in a chunk. If
+            the chunk doesn't have any changes, this will be 0.
+    """
+    def _finalize_result():
+        if not cur_result:
+            return
+
+        for result_dict, unchanged_lines in ((cur_result_orig,
+                                              orig_unchanged_lines),
+                                             (cur_result_modified,
+                                              modified_unchanged_lines)):
+            result_dict['changes_len'] -= unchanged_lines
+
+            if result_dict['changes_len'] == 0:
+                assert result_dict['pre_lines_of_context'] == 0
+                result_dict['pre_lines_of_context'] = unchanged_lines
+            else:
+                result_dict['post_lines_of_context'] = unchanged_lines
+
+    process_orig_changes = False
+    process_modified_changes = False
+
+    results = []
+    cur_result = None
+    cur_result_orig = None
+    cur_result_modified = None
+
+    orig_unchanged_lines = 0
+    modified_unchanged_lines = 0
+
+    # Look through the chunks of the diff, trying to find the amount
+    # of context shown at the beginning of each chunk. Though this
+    # will usually be 3 lines, it may be fewer or more, depending
+    # on file length and diff generation settings.
+    for i, line in enumerate(split_line_endings(diff.strip())):
+        if line.startswith(b'-'):
+            if process_orig_changes:
+                # We've found the first change in the original side of the
+                # chunk. We now know how many lines of context we have here.
+                #
+                # We reduce the indexes by 1 because the chunk ranges
+                # in diffs start at 1, and we want a 0-based index.
+                cur_result_orig['pre_lines_of_context'] = orig_unchanged_lines
+                cur_result_orig['changes_start'] += orig_unchanged_lines
+                cur_result_orig['changes_len'] -= orig_unchanged_lines
+                process_orig_changes = False
+
+            orig_unchanged_lines = 0
+        elif line.startswith(b'+'):
+            if process_modified_changes:
+                # We've found the first change in the modified side of the
+                # chunk. We now know how many lines of context we have here.
+                #
+                # We reduce the indexes by 1 because the chunk ranges
+                # in diffs start at 1, and we want a 0-based index.
+                cur_result_modified['pre_lines_of_context'] = \
+                    modified_unchanged_lines
+                cur_result_modified['changes_start'] += \
+                    modified_unchanged_lines
+                cur_result_modified['changes_len'] -= modified_unchanged_lines
+                process_modified_changes = False
+
+            modified_unchanged_lines = 0
+        elif line.startswith(b' '):
+            # We might be before a group of changes, inside a group of changes,
+            # or after a group of changes. Either way, we want to track these
+            # values.
+            orig_unchanged_lines += 1
+            modified_unchanged_lines += 1
+        else:
+            # This was not a change within a chunk, or we weren't processing,
+            # so check to see if this is a chunk header instead.
+            m = CHUNK_RANGE_RE.match(line)
+
+            if m:
+                # It is a chunk header. Start by updating the previous range
+                # to factor in the lines of trailing context.
+                _finalize_result()
+
+                # Next, reset the state for the next range, and pull the line
+                # numbers and lengths from the header. We'll also normalize
+                # the starting locations to be 0-based.
+                orig_start = int(m.group('orig_start')) - 1
+                orig_len = int(m.group('orig_len') or '1')
+                modified_start = int(m.group('modified_start')) - 1
+                modified_len = int(m.group('modified_len') or '1')
+
+                cur_result_orig = {
+                    'pre_lines_of_context': 0,
+                    'post_lines_of_context': 0,
+                    'chunk_start': orig_start,
+                    'chunk_len': orig_len,
+                    'changes_start': orig_start,
+                    'changes_len': orig_len,
+                }
+                cur_result_modified = {
+                    'pre_lines_of_context': 0,
+                    'post_lines_of_context': 0,
+                    'chunk_start': modified_start,
+                    'chunk_len': modified_len,
+                    'changes_start': modified_start,
+                    'changes_len': modified_len,
+                }
+                cur_result = {
+                    'orig': cur_result_orig,
+                    'modified': cur_result_modified,
+                }
+                results.append(cur_result)
+
+                process_orig_changes = True
+                process_modified_changes = True
+                orig_unchanged_lines = 0
+                modified_unchanged_lines = 0
+
+    # We need to adjust the last range, if we're still processing
+    # trailing context.
+    _finalize_result()
+
+    return results

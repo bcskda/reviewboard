@@ -4,13 +4,19 @@ from django.contrib import auth
 from django.contrib.auth.models import User, Permission
 from django.db.models import Q
 from django.utils import six
+from django.utils.timezone import get_current_timezone
 from djblets.db.query import get_object_or_none
 from djblets.testing.decorators import add_fixtures
-from djblets.webapi.errors import DOES_NOT_EXIST, PERMISSION_DENIED
+from djblets.webapi.errors import (DOES_NOT_EXIST,
+                                   INVALID_FORM_DATA,
+                                   PERMISSION_DENIED)
+from djblets.webapi.testing.decorators import webapi_test_template
 from kgb import SpyAgency
+from pytz import timezone
 
 from reviewboard.accounts.backends import AuthBackend
 from reviewboard.accounts.models import LocalSiteProfile
+from reviewboard.admin.server import build_server_url
 from reviewboard.reviews.models import (BaseComment, ReviewRequest,
                                         ReviewRequestDraft)
 from reviewboard.reviews.signals import (review_request_closing,
@@ -22,12 +28,14 @@ from reviewboard.webapi.errors import (CLOSE_ERROR, INVALID_REPOSITORY,
                                        PUBLISH_ERROR, REOPEN_ERROR)
 from reviewboard.webapi.resources import resources
 from reviewboard.webapi.tests.base import BaseWebAPITestCase
-from reviewboard.webapi.tests.mimetypes import (review_request_item_mimetype,
+from reviewboard.webapi.tests.mimetypes import (review_item_mimetype,
+                                                review_request_item_mimetype,
                                                 review_request_list_mimetype)
 from reviewboard.webapi.tests.mixins import BasicTestsMetaclass
 from reviewboard.webapi.tests.mixins_extra_data import (ExtraDataItemMixin,
                                                         ExtraDataListMixin)
 from reviewboard.webapi.tests.urls import (get_repository_item_url,
+                                           get_review_item_url,
                                            get_review_request_draft_url,
                                            get_review_request_item_url,
                                            get_review_request_list_url,
@@ -55,7 +63,7 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase):
                              populate_items):
         if populate_items:
             if not with_local_site:
-                LocalSite.objects.create(name=self.local_site_name)
+                LocalSite.objects.get_or_create(name=self.local_site_name)
 
             items = [
                 self.create_review_request(
@@ -108,16 +116,33 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase):
         self.assertEqual(rsp['stat'], 'ok')
         self.assertEqual(len(rsp['review_requests']), 6)
 
-        self._login_user(admin=True)
-        rsp = self.api_get(
-            url,
-            {
-                'status': 'all',
-                'show-all-unpublished': True,
-            },
-            expected_mimetype=review_request_list_mimetype)
+    @add_fixtures(['test_site'])
+    def test_get_unpublished(self):
+        """Testing the GET review-requests/?show-all-unpublished API"""
+        self.create_review_request(publish=True, status='P')
+        self.create_review_request(public=False, status='P')
+
+        url = get_review_request_list_url()
+        unpublished_params = {'status': 'all', 'show-all-unpublished': True}
+
+        rsp = self.api_get(url, unpublished_params,
+                           expected_mimetype=review_request_list_mimetype)
         self.assertEqual(rsp['stat'], 'ok')
-        self.assertEqual(len(rsp['review_requests']), 7)
+        self.assertEqual(len(rsp['review_requests']), 1)
+
+        self.user.user_permissions.add(
+            Permission.objects.get(codename='can_submit_as_another_user'))
+
+        rsp = self.api_get(url, unpublished_params,
+                           expected_mimetype=review_request_list_mimetype)
+        self.assertEqual(rsp['stat'], 'ok')
+        self.assertEqual(len(rsp['review_requests']), 2)
+
+        self._login_user(admin=True)
+        rsp = self.api_get(url, unpublished_params,
+                           expected_mimetype=review_request_list_mimetype)
+        self.assertEqual(rsp['stat'], 'ok')
+        self.assertEqual(len(rsp['review_requests']), 2)
 
     def test_get_with_counts_only(self):
         """Testing the GET review-requests/?counts-only=1 API"""
@@ -570,6 +595,25 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase):
                                          extra_query=Q(shipit_count__gt=0))
         self.assertEqual(len(rsp['review_requests']), q.count())
 
+    # Tests for determining if ship it counter works with removable ship-its
+    def _setup_removable_ship_it_count_tests(self):
+        review_request = self.create_review_request(publish=True)
+        review = self.create_review(review_request, user=self.user,
+                                    ship_it=True, publish=True)
+        self.api_put(
+            get_review_item_url(review_request, review.id),
+            {'ship_it': False},
+            expected_mimetype=review_item_mimetype)
+        self.create_review(review_request, ship_it=True, publish=True)
+
+    def test_get_with_removable_ship_it_count_equals(self):
+        """Testing the GET review-requests/?ship-it-count= API
+           with removable ship it"""
+        self._setup_removable_ship_it_count_tests()
+        self._test_get_with_field_count('ship-it-count', 2, 0)
+        self._test_get_with_field_count('ship-it-count', 1, 1)
+
+
     def test_get_with_time_added_from(self):
         """Testing the GET review-requests/?time-added-from= API"""
         start_index = 3
@@ -680,6 +724,25 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase):
                 public=True, status='P',
                 last_updated__lt=r.last_updated).count())
 
+    def test_get_with_last_updated_from_and_ambiguous_time(self):
+        """Testing the GET review-requests/?last-updated-from= API with an
+        ambiguous timestamp
+        """
+        self.spy_on(get_current_timezone,
+                    call_fake=lambda: timezone('America/Chicago'))
+
+        rsp = self.api_get(
+            get_review_request_list_url(),
+            {
+                'last-updated-from': '2016-11-06T01:05:59',
+                'counts-only': 1,
+            },
+            expected_status=400)
+
+        self.assertEqual(rsp['stat'], 'fail')
+        self.assertEqual(rsp['err']['code'], INVALID_FORM_DATA.code)
+        self.assertTrue('last-updated-from' in rsp['fields'])
+
     @add_fixtures(['test_scmtools'])
     def test_get_with_repository_and_changenum(self):
         """Testing the GET review-requests/?repository=&changenum= API"""
@@ -740,6 +803,55 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase):
         self.assertEqual(rsp['review_requests'][0]['commit_id'],
                          commit_id)
 
+    @add_fixtures(['test_scmtools'])
+    def test_get_with_repository_and_branch(self):
+        """Testing the GET review-requests/?branch= API"""
+        self.create_review_request(create_repository=True,
+                                   publish=True,
+                                   branch='other-branch')
+        review_request = self.create_review_request(create_repository=True,
+                                                    publish=True,
+                                                    branch='test-branch')
+
+        rsp = self.api_get(
+            get_review_request_list_url(),
+            {
+                'branch': review_request.branch,
+            },
+            expected_mimetype=review_request_list_mimetype)
+
+        self.assertEqual(rsp['stat'], 'ok')
+        self.assertEqual(len(rsp['review_requests']), 1)
+        self.assertEqual(rsp['review_requests'][0]['id'],
+                         review_request.display_id)
+        self.assertEqual(rsp['review_requests'][0]['branch'],
+                         review_request.branch)
+
+    @add_fixtures(['test_scmtools'])
+    @webapi_test_template
+    def test_get_num_queries(self):
+        """Testing the GET <URL> API for number of queries"""
+        repo = self.create_repository()
+
+        review_requests = [
+            self.create_review_request(repository=repo, publish=True),
+            self.create_review_request(repository=repo, publish=True),
+            self.create_review_request(repository=repo, publish=True),
+        ]
+
+        for review_request in review_requests:
+            self.create_diffset(review_request)
+            self.create_diffset(review_request)
+
+        with self.assertNumQueries(15):
+            rsp = self.api_get(get_review_request_list_url(),
+                               expected_mimetype=review_request_list_mimetype)
+
+        self.assertIn('stat', rsp)
+        self.assertEqual(rsp['stat'], 'ok')
+        self.assertIn('total_results', rsp)
+        self.assertEqual(rsp['total_results'], 3)
+
     #
     # HTTP POST tests
     #
@@ -765,6 +877,24 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase):
         ReviewRequest.objects.get(pk=rsp['review_request']['id'])
 
     @add_fixtures(['test_scmtools'])
+    def test_post_with_repository_id(self):
+        """Testing the POST review-requests/ API with a repository ID"""
+        repository = self.create_repository()
+
+        rsp = self.api_post(
+            get_review_request_list_url(),
+            {'repository': repository.pk},
+            expected_mimetype=review_request_item_mimetype)
+        self.assertEqual(rsp['stat'], 'ok')
+        self.assertEqual(
+            rsp['review_request']['links']['repository']['href'],
+            self.base_url + get_repository_item_url(repository))
+
+        # See if we can fetch this. Also return it for use in other
+        # unit tests.
+        return ReviewRequest.objects.get(pk=rsp['review_request']['id'])
+
+    @add_fixtures(['test_scmtools'])
     def test_post_with_repository_name(self):
         """Testing the POST review-requests/ API with a repository name"""
         repository = self.create_repository()
@@ -772,6 +902,44 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase):
         rsp = self.api_post(
             get_review_request_list_url(),
             {'repository': repository.name},
+            expected_mimetype=review_request_item_mimetype)
+        self.assertEqual(rsp['stat'], 'ok')
+        self.assertEqual(
+            rsp['review_request']['links']['repository']['href'],
+            self.base_url + get_repository_item_url(repository))
+
+        # See if we can fetch this. Also return it for use in other
+        # unit tests.
+        return ReviewRequest.objects.get(pk=rsp['review_request']['id'])
+
+    @add_fixtures(['test_scmtools'])
+    def test_post_with_repository_mirror_path(self):
+        """Testing the POST review-requests/ API with a repository
+        mirror_path
+        """
+        repository = self.create_repository(mirror_path='/foo')
+
+        rsp = self.api_post(
+            get_review_request_list_url(),
+            {'repository': repository.mirror_path},
+            expected_mimetype=review_request_item_mimetype)
+        self.assertEqual(rsp['stat'], 'ok')
+        self.assertEqual(
+            rsp['review_request']['links']['repository']['href'],
+            self.base_url + get_repository_item_url(repository))
+
+        # See if we can fetch this. Also return it for use in other
+        # unit tests.
+        return ReviewRequest.objects.get(pk=rsp['review_request']['id'])
+
+    @add_fixtures(['test_scmtools'])
+    def test_post_with_repository_path(self):
+        """Testing the POST review-requests/ API with a repository path"""
+        repository = self.create_repository(mirror_path='/foo')
+
+        rsp = self.api_post(
+            get_review_request_list_url(),
+            {'repository': repository.path},
             expected_mimetype=review_request_item_mimetype)
         self.assertEqual(rsp['stat'], 'ok')
         self.assertEqual(
@@ -839,26 +1007,148 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase):
         self.assertEqual(rsp['err']['code'], INVALID_REPOSITORY.code)
 
     @add_fixtures(['test_scmtools'])
-    def test_post_with_conflicting_repos(self):
-        """Testing the POST review-requests/ API with conflicting repositories
+    def test_post_with_conflicting_repos_prefer_visible(self):
+        """Testing the POST review-requests/ API with conflicting
+        repositories, preferring visible over name/path/mirror_path
         """
-        repository = self.create_repository(tool_name='Test')
-        self.create_repository(tool_name='Test',
-                               name='Test 2',
-                               path='blah',
-                               mirror_path=repository.path)
+        repository1 = self.create_repository(
+            tool_name='Test',
+            name='Test 1',
+            path='path1',
+            mirror_path='mirror')
+        repository2 = self.create_repository(
+            tool_name='Test',
+            name='Test 2',
+            path='path3',
+            mirror_path='mirror')
+        repository3 = self.create_repository(
+            tool_name='Test',
+            name='Test 3',
+            path='path3',
+            mirror_path='mirror')
 
         rsp = self.api_post(
             get_review_request_list_url(),
-            {'repository': repository.path},
+            {'repository': 'mirror'},
             expected_status=400)
         self.assertEqual(rsp['stat'], 'fail')
         self.assertEqual(rsp['err']['code'], INVALID_REPOSITORY.code)
         self.assertEqual(rsp['err']['msg'],
-                         'Too many repositories matched "%s". Try '
-                         'specifying the repository by name instead.'
-                         % repository.path)
-        self.assertEqual(rsp['repository'], repository.path)
+                         'Too many repositories matched "mirror". Try '
+                         'specifying the repository by name instead.')
+        self.assertEqual(rsp['repository'], 'mirror')
+
+        # It should now work when only one is visible.
+        repository2.visible = False
+        repository2.save(update_fields=('visible',))
+
+        repository3.visible = False
+        repository3.save(update_fields=('visible',))
+
+        rsp = self.api_post(
+            get_review_request_list_url(),
+            {'repository': 'mirror'},
+            expected_mimetype=review_request_item_mimetype)
+        self.assertEqual(rsp['stat'], 'ok')
+
+        review_request = \
+            ReviewRequest.objects.get(pk=rsp['review_request']['id'])
+        self.assertEqual(review_request.repository_id, repository1.pk)
+        self.compare_item(rsp['review_request'], review_request)
+
+    @add_fixtures(['test_scmtools'])
+    def test_post_with_conflicting_repos_prefer_name(self):
+        """Testing the POST review-requests/ API with conflicting
+        repositories, preferring name over path/mirror_path
+        """
+        repository = self.create_repository(
+            tool_name='Test',
+            name='Test 1',
+            path='path1',
+            mirror_path='mirror')
+        self.create_repository(
+            tool_name='Test',
+            name='Test 2',
+            path='path3',
+            mirror_path='mirror')
+        self.create_repository(
+            tool_name='Test',
+            name='Test 3',
+            path='path3',
+            mirror_path='mirror')
+
+        rsp = self.api_post(
+            get_review_request_list_url(),
+            {'repository': 'mirror'},
+            expected_status=400)
+        self.assertEqual(rsp['stat'], 'fail')
+        self.assertEqual(rsp['err']['code'], INVALID_REPOSITORY.code)
+        self.assertEqual(rsp['err']['msg'],
+                         'Too many repositories matched "mirror". Try '
+                         'specifying the repository by name instead.')
+        self.assertEqual(rsp['repository'], 'mirror')
+
+        # It should now work when one has the name "mirror".
+        repository.name = 'mirror'
+        repository.save(update_fields=('name',))
+
+        rsp = self.api_post(
+            get_review_request_list_url(),
+            {'repository': 'mirror'},
+            expected_mimetype=review_request_item_mimetype)
+        self.assertEqual(rsp['stat'], 'ok')
+
+        review_request = \
+            ReviewRequest.objects.get(pk=rsp['review_request']['id'])
+        self.assertEqual(review_request.repository_id, repository.pk)
+        self.compare_item(rsp['review_request'], review_request)
+
+    @add_fixtures(['test_scmtools'])
+    def test_post_with_conflicting_repos_prefer_path(self):
+        """Testing the POST review-requests/ API with conflicting
+        repositories, preferring path over mirror_path
+        """
+        repository = self.create_repository(
+            tool_name='Test',
+            name='Test 1',
+            path='path1',
+            mirror_path='mirror')
+        self.create_repository(
+            tool_name='Test',
+            name='Test 2',
+            path='path3',
+            mirror_path='mirror')
+        self.create_repository(
+            tool_name='Test',
+            name='Test 3',
+            path='path3',
+            mirror_path='mirror')
+
+        rsp = self.api_post(
+            get_review_request_list_url(),
+            {'repository': 'mirror'},
+            expected_status=400)
+        self.assertEqual(rsp['stat'], 'fail')
+        self.assertEqual(rsp['err']['code'], INVALID_REPOSITORY.code)
+        self.assertEqual(rsp['err']['msg'],
+                         'Too many repositories matched "mirror". Try '
+                         'specifying the repository by name instead.')
+        self.assertEqual(rsp['repository'], 'mirror')
+
+        # It should now work when one has the path "mirror".
+        repository.path = 'mirror'
+        repository.save(update_fields=('path',))
+
+        rsp = self.api_post(
+            get_review_request_list_url(),
+            {'repository': 'mirror'},
+            expected_mimetype=review_request_item_mimetype)
+        self.assertEqual(rsp['stat'], 'ok')
+
+        review_request = \
+            ReviewRequest.objects.get(pk=rsp['review_request']['id'])
+        self.assertEqual(review_request.repository_id, repository.pk)
+        self.compare_item(rsp['review_request'], review_request)
 
     @add_fixtures(['test_scmtools'])
     def test_post_with_commit_id(self):
@@ -960,14 +1250,54 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase):
             },
             expected_mimetype=review_request_item_mimetype)
         self.assertEqual(rsp['stat'], 'ok')
-        self.assertEqual(rsp['review_request']['commit_id'], commit_id)
-        self.assertEqual(rsp['review_request']['summary'], 'Commit summary')
-        self.assertEqual(rsp['review_request']['description'],
-                         'Commit description.')
+        self.assertEqual(rsp['review_request']['commit_id'], 'abc123')
+        self.assertEqual(rsp['review_request']['changenum'], None)
+        self.assertEqual(rsp['review_request']['summary'], '')
+        self.assertEqual(rsp['review_request']['description'], '')
 
         review_request = \
             ReviewRequest.objects.get(pk=rsp['review_request']['id'])
-        self.assertEqual(review_request.commit, commit_id)
+        self.assertEqual(review_request.commit_id, 'abc123')
+        self.assertEqual(review_request.summary, '')
+        self.assertEqual(review_request.description, '')
+
+        draft = review_request.get_draft()
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft.commit_id, commit_id)
+        self.assertEqual(draft.summary, 'Commit summary')
+        self.assertEqual(draft.description, 'Commit description.')
+
+    @add_fixtures(['test_scmtools'])
+    @webapi_test_template
+    def test_post_with_changenum(self):
+        """Testing the POST <URL> API with changenum"""
+        repository = self.create_repository(tool_name='Test')
+
+        rsp = self.api_post(
+            get_review_request_list_url(),
+            {
+                'repository': repository.name,
+                'changenum': 123,
+            },
+            expected_mimetype=review_request_item_mimetype)
+        self.assertEqual(rsp['stat'], 'ok')
+        self.assertEqual(rsp['review_request']['commit_id'], '123')
+        self.assertEqual(rsp['review_request']['changenum'], 123)
+        self.assertEqual(rsp['review_request']['summary'], '')
+        self.assertEqual(rsp['review_request']['description'], '')
+
+        review_request = \
+            ReviewRequest.objects.get(pk=rsp['review_request']['id'])
+        self.assertEqual(review_request.commit_id, '123')
+        self.assertEqual(review_request.changenum, 123)
+        self.assertEqual(review_request.summary, '')
+        self.assertEqual(review_request.description, '')
+
+        draft = review_request.get_draft()
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft.commit_id, '123')
+        self.assertEqual(draft.summary, 'Commit summary')
+        self.assertEqual(draft.description, 'Commit description.')
 
     def test_post_with_submit_as_and_permission(self):
         """Testing the POST review-requests/?submit_as= API
@@ -996,12 +1326,9 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase):
 
         local_site = self.get_local_site(name=self.local_site_name)
 
-        site_profile = LocalSiteProfile.objects.create(
-            local_site=local_site,
-            user=self.user,
-            profile=self.user.get_profile())
+        site_profile = self.user.get_site_profile(local_site)
         site_profile.permissions['reviews.can_submit_as_another_user'] = True
-        site_profile.save()
+        site_profile.save(update_fields=('permissions',))
 
         self._test_post_with_submit_as(local_site)
 
@@ -1049,7 +1376,7 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase):
         self.spy_on(auth.get_backends, call_fake=lambda: [backend])
 
         # First spy messes with User.has_perm, this lets it through
-        self.spy_on(User.has_perm, call_fake=lambda x, y, z: True)
+        self.spy_on(User.has_perm, call_fake=lambda *args, **kwargs: True)
         self.spy_on(backend.get_or_create_user)
 
         rsp = self.api_post(
@@ -1168,12 +1495,9 @@ class ResourceItemTests(ExtraDataItemMixin, BaseWebAPITestCase):
         self.user = self._login_user(local_site=True)
         local_site = self.get_local_site(name=self.local_site_name)
 
-        site_profile = LocalSiteProfile.objects.create(
-            user=self.user,
-            local_site=local_site,
-            profile=self.user.get_profile())
+        site_profile = self.user.get_site_profile(local_site)
         site_profile.permissions['reviews.delete_reviewrequest'] = True
-        site_profile.save()
+        site_profile.save(update_fields=('permissions',))
 
         review_request = self.create_review_request(with_local_site=True)
 
@@ -1273,6 +1597,73 @@ class ResourceItemTests(ExtraDataItemMixin, BaseWebAPITestCase):
         self._testHttpCaching(get_review_request_item_url(review_request.id),
                               check_etags=True)
 
+    @add_fixtures(['test_scmtools'])
+    @webapi_test_template
+    def test_get_with_latest_diff(self):
+        """Testing the GET <URL> API and checking for the latest diff"""
+        repo = self.create_repository()
+        review_request = self.create_review_request(repository=repo,
+                                                    publish=True)
+
+        self.create_diffset(review_request)
+        latest = self.create_diffset(review_request)
+
+        rsp = self.api_get(get_review_request_item_url(review_request.pk),
+                           expected_mimetype=review_request_item_mimetype)
+
+        self.assertIn('stat', rsp)
+        self.assertEqual(rsp['stat'], 'ok')
+
+        self.assertIn('review_request', rsp)
+        item_rsp = rsp['review_request']
+
+        self.assertIn('links', item_rsp)
+        links = item_rsp['links']
+
+        self.assertIn('latest_diff', links)
+        diff_link = links['latest_diff']
+
+        self.assertEqual(
+            diff_link['href'],
+            build_server_url(resources.diff.get_href(latest, None)))
+
+    @webapi_test_template
+    def test_get_with_no_latest_diff(self):
+        """Testing the GET <URL> API and checking that there is no latest_diff
+        link for review requests without a repository
+        """
+        review_request = self.create_review_request(publish=True)
+        rsp = self.api_get(get_review_request_item_url(review_request.pk),
+                           expected_mimetype=review_request_item_mimetype)
+
+        self.assertIn('stat', rsp)
+        self.assertEqual(rsp['stat'], 'ok')
+
+        self.assertIn('review_request', rsp)
+        item_rsp = rsp['review_request']
+
+        self.assertIn('links', item_rsp)
+        links = item_rsp['links']
+
+        self.assertNotIn('latest_diff', links)
+
+    def test_get_contains_all_issue_counts(self):
+        """Testing the GET review-requests/<id>/ API contains counts for all
+        issues which are dropped, open, resolved and verifying.
+        """
+
+        review_request = self.create_review_request(publish=True)
+        rsp = self.api_get(get_review_request_item_url(review_request.pk),
+                           expected_mimetype=review_request_item_mimetype)
+
+        self.assertIn('review_request', rsp)
+        rr = rsp['review_request']
+
+        self.assertIn('issue_dropped_count', rr)
+        self.assertIn('issue_open_count', rr)
+        self.assertIn('issue_resolved_count', rr)
+        self.assertIn('issue_verifying_count', rr)
+
     #
     # HTTP PUT tests
     #
@@ -1286,9 +1677,7 @@ class ResourceItemTests(ExtraDataItemMixin, BaseWebAPITestCase):
         return (get_review_request_item_url(review_request.display_id,
                                             local_site_name),
                 review_request_item_mimetype,
-                {
-                    'extra_data.dummy': '',
-                },
+                {'extra_data.dummy': ''},
                 review_request,
                 [])
 
@@ -1508,12 +1897,9 @@ class ResourceItemTests(ExtraDataItemMixin, BaseWebAPITestCase):
 
         local_site = self.get_local_site(name=self.local_site_name)
 
-        site_profile = LocalSiteProfile.objects.create(
-            local_site=local_site,
-            user=self.user,
-            profile=self.user.get_profile())
+        site_profile = self.user.get_site_profile(local_site)
         site_profile.permissions['reviews.can_change_status'] = True
-        site_profile.save()
+        site_profile.save(update_fields=('permissions',))
 
         self._test_put_status_as_other_user(local_site)
 

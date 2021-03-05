@@ -18,7 +18,7 @@ Changing Fields
 ===============
 
 Most fields on a review request can be changed, with the exception of
-:guilabel:`Submitter`, :guilabel:`Commit` and :guilabel:`Repository`.
+:guilabel:`Commit` and :guilabel:`Repository`.
 
 To change a field, either click on the field (in the case of
 :guilabel:`Description` and :guilabel:`Testing Done`) or click on the pencil
@@ -26,6 +26,26 @@ icon. A text box will appear allowing you to modify the value.
 
 To save a field, press the :kbd:`Enter` key or click :guilabel:`OK`. To revert
 your changes, press the :kbd:`Escape` key or click :guilabel:`Cancel`.
+
+
+.. _review-request-field-owner:
+
+Owner
+-----
+
+The :guilabel:`Owner` field represents the current owner of the review
+request. This is the person responsible for updating the review request and
+responding to review feedback.
+
+If the original owner is no longer responsible for the change (for instance,
+they've left the team or the company), they (or an administrator) can
+re-assign the review request to another user by editing this field and
+choosing the new owner.
+
+
+.. versionchanged:: 3.0
+   Prior to Review Board 3.0, this field was called "Submitter" and was not
+   editable.
 
 
 Summary
@@ -124,3 +144,14 @@ people will be displayed, showing both the username and full name.
 Review Board doesn't enforce that the people listed must review the change
 before it can be submitted. This is a policy that is left up to each
 organization.
+
+
+Custom Fields
+=============
+
+The default set of fields may not be enough for some organizations, or some of
+those fields may not be wanted. By :ref:`writing an extension
+<writing-extensions>`, the list of fields on a review request can be changed.
+
+See :ref:`extension-review-request-fields` for details on how to extend the
+list of fields on a review request.

@@ -23,11 +23,13 @@ suite('rb/diffviewer/models/DiffReviewable', function() {
             var diffReviewable = new RB.DiffReviewable({
                 reviewRequest: reviewRequest,
                 fileDiffID: 3,
-                fileIndex: 4,
-                revision: 2
+                revision: 2,
+                file: new RB.DiffFile({
+                    index: 4
+                })
             });
 
-            spyOn($, 'ajax').andCallFake(function(request) {
+            spyOn($, 'ajax').and.callFake(function(request) {
                 expect(request.type).toBe('GET');
                 expect(request.url).toBe(
                     '/r/1/diff/2/fragment/3/?index=4&' + TEMPLATE_SERIAL);
@@ -48,12 +50,14 @@ suite('rb/diffviewer/models/DiffReviewable', function() {
             var diffReviewable = new RB.DiffReviewable({
                 reviewRequest: reviewRequest,
                 fileDiffID: 3,
-                fileIndex: 4,
                 revision: 2,
-                interdiffRevision: 3
+                interdiffRevision: 3,
+                file: new RB.DiffFile({
+                    index: 4
+                })
             });
 
-            spyOn($, 'ajax').andCallFake(function(request) {
+            spyOn($, 'ajax').and.callFake(function(request) {
                 expect(request.type).toBe('GET');
                 expect(request.url).toBe(
                     '/r/1/diff/2-3/fragment/3/?index=4&' + TEMPLATE_SERIAL);
@@ -76,11 +80,13 @@ suite('rb/diffviewer/models/DiffReviewable', function() {
             var diffReviewable = new RB.DiffReviewable({
                 reviewRequest: reviewRequest,
                 fileDiffID: 3,
-                fileIndex: 5,
-                revision: 2
+                revision: 2,
+                file: new RB.DiffFile({
+                    index: 5
+                })
             });
 
-            spyOn($, 'ajax').andCallFake(function(request) {
+            spyOn($, 'ajax').and.callFake(function(request) {
                 expect(request.type).toBe('GET');
                 expect(request.url).toBe('/r/1/diff/2/fragment/3/chunk/4/');
                 expect(request.data.index).toBe(5);
@@ -105,13 +111,15 @@ suite('rb/diffviewer/models/DiffReviewable', function() {
             var diffReviewable = new RB.DiffReviewable({
                 reviewRequest: reviewRequest,
                 fileDiffID: 3,
-                fileIndex: 5,
                 revision: 2,
                 interdiffRevision: 3,
-                interFileDiffID: 4
+                interFileDiffID: 4,
+                file: new RB.DiffFile({
+                    index: 5
+                })
             });
 
-            spyOn($, 'ajax').andCallFake(function(request) {
+            spyOn($, 'ajax').and.callFake(function(request) {
                 expect(request.type).toBe('GET');
                 expect(request.url).toBe('/r/1/diff/2-3/fragment/3-4/chunk/4/');
                 expect(request.data.index).toBe(5);

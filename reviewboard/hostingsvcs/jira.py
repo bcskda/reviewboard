@@ -11,6 +11,7 @@ try:
 except ImportError:
     has_jira = False
 
+from reviewboard.admin.validation import validate_bug_tracker_base_hosting_url
 from reviewboard.hostingsvcs.bugtracker import BugTracker
 from reviewboard.hostingsvcs.forms import HostingServiceForm
 from reviewboard.hostingsvcs.service import HostingService
@@ -21,7 +22,8 @@ class JIRAForm(HostingServiceForm):
         label=_('JIRA URL'),
         max_length=64,
         required=True,
-        widget=forms.TextInput(attrs={'size': '60'}))
+        widget=forms.TextInput(attrs={'size': '60'}),
+        validators=[validate_bug_tracker_base_hosting_url])
 
     def clean_jira_url(self):
         return self.cleaned_data['jira_url'].rstrip('/ ')
@@ -48,9 +50,15 @@ class JIRA(HostingService, BugTracker):
 
         if has_jira:
             if not self.jira_client:
-                self.jira_client = JIRAClient(options={
-                    'server': repository.extra_data['bug_tracker-jira_url'],
-                })
+                try:
+                    self.jira_client = JIRAClient(options={
+                        'server': repository.extra_data['bug_tracker-jira_url'],
+                    }, max_retries=0)
+                except ValueError as e:
+                    logging.warning(
+                        'Unable to initialize JIRAClient for server %s: %s'
+                        % (repository.extra_data['bug_tracker-jira_url'], e))
+                    return result
 
             try:
                 jira_issue = self.jira_client.issue(bug_id)

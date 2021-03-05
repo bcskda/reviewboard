@@ -1,28 +1,28 @@
 {% extends "base.html" %}
-{% load compressed djblets_extensions %}
+{% load djblets_extensions pipeline %}
 
 {% block title %}JavaScript Unit Tests{% endblock %}
 
 {% block css %}
-{%  compressed_css "js-tests" %}
+{%  stylesheet "js-tests" %}
 {% endblock %}
 
 {% block js_extensions %}{% endblock %}
 
 {% block scripts-post %}
-{%  compressed_js "djblets-config-forms" %}
-{%  compressed_js "config-forms" %}
-{%  compressed_js "reviews" %}
-{%  compressed_js "newReviewRequest" %}
-{%  compressed_js "js-test-libs" %}
+{%  javascript "djblets-config-forms" %}
+{%  javascript "djblets-forms" %}
+{%  javascript "djblets-integrations" %}
+{%  javascript "config-forms" %}
+{%  javascript "reviews" %}
+{%  javascript "review-request-page" %}
+{%  javascript "newReviewRequest" %}
+{%  javascript "js-test-libs" %}
 
 {%  block scripts-test %}{% endblock %}
 
 <script>
 $(document).ready(function() {
-    var jasmineEnv = jasmine.getEnv(),
-        htmlReporter = new jasmine.HtmlReporter();
-
     RB.ajaxOptions.enableQueuing = false;
     RB.ajaxOptions.enableIndicator = false;
 
@@ -32,10 +32,6 @@ $(document).ready(function() {
     // Disable throttling of callbacks when possible.
     _.throttle = function(cb) {
         return cb;
-    };
-
-    jasmineEnv.specFilter = function(spec) {
-        return htmlReporter.specFilter(spec);
     };
 
     window.$testsScratch = $("<div id='tests-scratch'/>")
@@ -65,7 +61,7 @@ $(document).ready(function() {
          * We do this after creating the UserSession, since that will also
          * assert.
          */
-        spyOn(console, 'assert').andCallFake(function(condition, msg) {
+        spyOn(console, 'assert').and.callFake(function(condition, msg) {
             if (!condition) {
                 throw Error(msg);
             }
@@ -76,15 +72,12 @@ $(document).ready(function() {
          * spurious error output and HTTP requests.
          */
         spyOn($.fn, 'retinaGravatar')
-            .andCallFake(function() { return this; });
+            .and.callFake(function() { return this; });
     });
 
     afterEach(function() {
         $testsScratch.empty();
     });
-
-    jasmineEnv.addReporter(htmlReporter);
-    jasmineEnv.execute();
 });
 </script>
 {% endblock %}

@@ -10,6 +10,7 @@ from django.contrib.auth.forms import \
 from django.core.exceptions import ValidationError
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext_lazy as _
+from djblets.auth.ratelimit import is_ratelimited
 from djblets.siteconfig.forms import SiteSettingsForm
 
 from reviewboard.admin.checks import get_can_enable_dns, get_can_enable_ldap
@@ -94,6 +95,22 @@ class ActiveDirectorySettingsForm(SiteSettingsForm):
 
     class Meta:
         title = _('Active Directory Authentication Settings')
+        fieldsets = (
+            (None, {
+                'fields': ('auth_ad_domain_name',
+                           'auth_ad_use_tls',
+                           'auth_ad_find_dc_from_dns',
+                           'auth_ad_domain_controller'),
+            }),
+            (_('Access Control Settings'), {
+                'fields': ('auth_ad_ou_name',
+                           'auth_ad_group_name'),
+            }),
+            (_('Advanced Settings'), {
+                'fields': ('auth_ad_search_root',
+                           'auth_ad_recursion_depth'),
+            }),
+        )
 
 
 class StandardAuthSettingsForm(SiteSettingsForm):
@@ -106,16 +123,6 @@ class StandardAuthSettingsForm(SiteSettingsForm):
 
     auth_registration_show_captcha = forms.BooleanField(
         label=_('Show a captcha for registration'),
-        help_text=mark_safe(
-            _('Displays a captcha using <a href="%(recaptcha_url)s">'
-              'reCAPTCHA</a> on the registration page. To enable this, you '
-              'will need to go <a href="%(register_url)s">here</A> to '
-              'register an account and type in your new keys below.')
-            % {
-                'recaptcha_url': 'http://www.recaptcha.net/',
-                'register_url': 'https://www.google.com/recaptcha/admin'
-                                '#createsite',
-            }),
         required=False)
 
     recaptcha_public_key = forms.CharField(
@@ -127,6 +134,24 @@ class StandardAuthSettingsForm(SiteSettingsForm):
         label=_('reCAPTCHA Private Key'),
         required=False,
         widget=forms.TextInput(attrs={'size': '60'}))
+
+    def __init__(self, *args, **kwargs):
+        super(StandardAuthSettingsForm, self).__init__(*args, **kwargs)
+
+        # This is done at initialization time instead of in the field
+        # definition because the format operation causes the lazy translation
+        # to be evaluated, which has to happen after the i18n infrastructure
+        # has been started.
+        self.fields['auth_registration_show_captcha'].help_text = mark_safe(
+            _('Displays a captcha using <a href="%(recaptcha_url)s">'
+              'reCAPTCHA</a> on the registration page. To enable this, you '
+              'will need to go <a href="%(register_url)s">here</A> to '
+              'register an account and type in your new keys below.')
+            % {
+                'recaptcha_url': 'http://www.google.com/recaptcha',
+                'register_url': 'https://www.google.com/recaptcha/admin'
+                                '#createsite',
+            })
 
     def clean_recaptcha_public_key(self):
         """Validate that the reCAPTCHA public key is specified if needed."""
@@ -147,7 +172,17 @@ class StandardAuthSettingsForm(SiteSettingsForm):
         return key
 
     class Meta:
-        title = _('Basic Authentication Settings')
+        title = _('Registration Settings')
+        fieldsets = (
+            (None, {
+                'fields': ('auth_enable_registration',),
+            }),
+            (_('reCAPTCHA Settings'), {
+                'fields': ('auth_registration_show_captcha',
+                           'recaptcha_public_key',
+                           'recaptcha_private_key'),
+            }),
+        )
 
 
 class HTTPBasicSettingsForm(SiteSettingsForm):
@@ -232,13 +267,6 @@ class LDAPSettingsForm(SiteSettingsForm):
 
     auth_ldap_uid_mask = forms.CharField(
         label=_("Custom LDAP User Search Filter"),
-        help_text=_("A custom LDAP search filter, corresponding to RFC 2254. "
-                    "If left unset, this option is equivalent to "
-                    "<tt>(usernameattribute=%(varname)s)</tt>. Use "
-                    "<tt>\"%(varname)s\"</tt> "
-                    "wherever the username would normally go. "
-                    "Specify this value only if the default cannot locate "
-                    "all users.") % {'varname': '%s'},
         required=False,
         widget=forms.TextInput(attrs={'size': '40'}))
 
@@ -257,6 +285,24 @@ class LDAPSettingsForm(SiteSettingsForm):
         widget=forms.PasswordInput(attrs={'size': '30'}, render_value=True),
         help_text=_("The password for the Review Board LDAP Bind Account."),
         required=False)
+
+    def __init__(self, *args, **kwargs):
+        super(LDAPSettingsForm, self).__init__(*args, **kwargs)
+
+        # This is done at initialization time instead of in the field
+        # definition because the format operation causes the lazy translation
+        # to be evaluated, which has to happen after the i18n infrastructure
+        # has been started.
+        self.fields['auth_ldap_uid_mask'].help_text = mark_safe(
+            _('A custom LDAP search filter, corresponding to RFC 2254. If '
+              'left unset, this option is equivalent to <tt>('
+              'usernameattribute=%(varname)s)</tt>. Use <tt>'
+              '"%(varname)s"</tt> wherever the username would normally go. '
+              'Specify this value only if the default cannot locate all '
+              'users.')
+            % {
+                'varname': '%s',
+            })
 
     def load(self):
         """Load the data for the form."""
@@ -282,6 +328,24 @@ class LDAPSettingsForm(SiteSettingsForm):
 
     class Meta:
         title = _('LDAP Authentication Settings')
+        fieldsets = (
+            (None, {
+                'fields': ('auth_ldap_uri',
+                           'auth_ldap_tls',
+                           'auth_ldap_anon_bind_uid',
+                           'auth_ldap_anon_bind_passwd',
+                           'auth_ldap_base_dn'),
+            }),
+            (_('User Lookups'), {
+                'fields': ('auth_ldap_uid',
+                           'auth_ldap_given_name_attribute',
+                           'auth_ldap_surname_attribute',
+                           'auth_ldap_full_name_attribute',
+                           'auth_ldap_email_attribute',
+                           'auth_ldap_email_domain',
+                           'auth_ldap_uid_mask'),
+            }),
+        )
 
 
 class LegacyAuthModuleSettingsForm(SiteSettingsForm):
@@ -340,10 +404,20 @@ class X509SettingsForm(SiteSettingsForm):
             ("SSL_CLIENT_S_DN", _("DN (Distinguished Name)")),
             ("SSL_CLIENT_S_DN_CN", _("CN (Common Name)")),
             ("SSL_CLIENT_S_DN_Email", _("E-mail address")),
+            # Allow the user to use a custom environment variable
+            ("CUSTOM", _("Custom Field")),
         ),
         help_text=_("The X.509 certificate field from which the Review Board "
                     "username will be extracted."),
         required=True)
+
+    auth_x509_custom_username_field = forms.CharField(
+        label=_("Custom Username Field"),
+        help_text=_("The custom X.509 certificate field from which the "
+                    "Review Board username will be extracted. "
+                    "(only used if Username Field is \"Custom Field\""),
+        required=False,
+        widget=forms.TextInput(attrs={'size': '40'}))
 
     auth_x509_username_regex = forms.CharField(
         label=_("Username Regex"),
@@ -382,7 +456,10 @@ class AuthenticationForm(DjangoAuthenticationForm):
     """Form used for user logins.
 
     This extends Django's built-in AuthenticationForm implementation to allow
-    users to specify their e-mail address in place of their username.
+    users to specify their e-mail address in place of their username. In
+    addition, it also tracks the number of failed login attempts for a given
+    time frame, and informs the user whether the maximum number of attempts
+    have been exceeded.
     """
 
     username = forms.CharField(
@@ -405,3 +482,39 @@ class AuthenticationForm(DjangoAuthenticationForm):
                 pass
 
         return username
+
+    def clean(self):
+        """Validate the authentication form.
+
+        In case authentication has failed for the given user, Djblets's rate
+        limiting feature will increment the number of failed login attempts
+        until the maximum number of attempts have been reached. The user
+        will have to wait until the rate limit time period is over before
+        trying again.
+
+        Returns:
+            dict:
+            The cleaned data for all fields in the form.
+
+        Raises:
+            django.core.exceptions.ValidationError:
+                The data in the form was not valid.
+        """
+        request = self.request
+
+        # Check if the number of failed login attempts were already exceeded
+        # before authenticating.
+        if is_ratelimited(request, increment=False):
+            raise forms.ValidationError(
+                _('Maximum number of login attempts exceeded.'))
+
+        try:
+            self.cleaned_data = super(AuthenticationForm, self).clean()
+        except ValidationError:
+            # If authentication for a given user has failed (i.e.
+            # self.user_cache is None), increment the number of
+            # failed login attempts.
+            is_ratelimited(request, increment=True)
+            raise
+
+        return self.cleaned_data

@@ -1,57 +1,145 @@
+"""Unit tests for the GitHub hosting service."""
+
 from __future__ import unicode_literals
 
 import hashlib
 import hmac
-import json
-from hashlib import md5
-from textwrap import dedent
+import logging
 
 from django.core.exceptions import ObjectDoesNotExist
-from django.utils import six
-from django.utils.six.moves import cStringIO as StringIO
-from django.utils.six.moves.urllib.error import HTTPError
-from django.utils.six.moves.urllib.parse import urlparse
 from djblets.testing.decorators import add_fixtures
 
-from reviewboard.scmtools.core import Branch
-from reviewboard.hostingsvcs.models import HostingServiceAccount
+from reviewboard.scmtools.core import Branch, Commit
+from reviewboard.hostingsvcs.errors import (AuthorizationError,
+                                            RepositoryError)
 from reviewboard.hostingsvcs.repository import RemoteRepository
-from reviewboard.hostingsvcs.tests.testcases import ServiceTests
+from reviewboard.hostingsvcs.testing import HostingServiceTestCase
 from reviewboard.reviews.models import ReviewRequest
+from reviewboard.scmtools.crypto_utils import (decrypt_password,
+                                               encrypt_password)
 from reviewboard.scmtools.errors import SCMError
-from reviewboard.scmtools.models import Repository
 from reviewboard.site.models import LocalSite
 from reviewboard.site.urlresolvers import local_site_reverse
 
 
-class GitHubTests(ServiceTests):
-    """Unit tests for the GitHub hosting service."""
+class GitHubTestCase(HostingServiceTestCase):
+    """Base class for GitHub test suites."""
+
     service_name = 'github'
 
+    default_account_data = {
+        'personal_token': encrypt_password('abc123'),
+    }
+
+    default_repository_extra_data = {
+        'repository_plan': 'public',
+        'github_public_repo_name': 'myrepo',
+    }
+
+
+class GitHubTests(GitHubTestCase):
+    """Unit tests for the GitHub hosting service."""
+
     def test_service_support(self):
-        """Testing the GitHub service support capabilities"""
+        """Testing GitHub service support capabilities"""
         self.assertTrue(self.service_class.supports_bug_trackers)
         self.assertTrue(self.service_class.supports_repositories)
         self.assertFalse(self.service_class.supports_ssh_key_association)
 
-    def test_public_field_values(self):
-        """Testing the GitHub public plan repository field values"""
-        fields = self._get_repository_fields('Git', plan='public', fields={
-            'github_public_repo_name': 'myrepo',
-        })
-        self.assertEqual(fields['path'], 'git://github.com/myuser/myrepo.git')
-        self.assertEqual(fields['mirror_path'],
-                         'git@github.com:myuser/myrepo.git')
+    def test_get_repository_fields_with_public_plan(self):
+        """Testing GitHub.get_repository_fields with the public plan"""
+        self.assertEqual(
+            self.get_repository_fields(
+                'Git',
+                plan='public',
+                fields={
+                    'github_public_repo_name': 'myrepo',
+                }
+            ),
+            {
+                'path': 'git://github.com/myuser/myrepo.git',
+                'mirror_path': 'git@github.com:myuser/myrepo.git',
+            })
 
-    def test_public_repo_api_url(self):
-        """Testing the GitHub public repository API URL"""
+    def test_get_repository_fields_with_public_org_plan(self):
+        """Testing GitHub.get_repository_fields with the public-org plan"""
+        self.assertEqual(
+            self.get_repository_fields(
+                'Git',
+                plan='public-org',
+                fields={
+                    'github_public_org_repo_name': 'myrepo',
+                    'github_public_org_name': 'myorg',
+                }
+            ),
+            {
+                'path': 'git://github.com/myorg/myrepo.git',
+                'mirror_path': 'git@github.com:myorg/myrepo.git',
+            })
+
+    def test_get_repository_fields_with_private_plan(self):
+        """Testing GitHub.get_repository_fields with the private plan"""
+        self.assertEqual(
+            self.get_repository_fields(
+                'Git',
+                plan='private',
+                fields={
+                    'github_private_repo_name': 'myrepo',
+                }
+            ),
+            {
+                'path': 'git@github.com:myuser/myrepo.git',
+                'mirror_path': '',
+            })
+
+    def test_get_repository_fields_with_private_org_plan(self):
+        """Testing GitHub.get_repository_fields with the private-org plan"""
+        self.assertEqual(
+            self.get_repository_fields(
+                'Git',
+                plan='private-org',
+                fields={
+                    'github_private_org_repo_name': 'myrepo',
+                    'github_private_org_name': 'myorg',
+                }
+            ),
+            {
+                'path': 'git@github.com:myorg/myrepo.git',
+                'mirror_path': '',
+            })
+
+    def test_get_repo_api_url_with_public_plan(self):
+        """Testing GitHub._get_repo_api_url with the public plan"""
         url = self._get_repo_api_url('public', {
             'github_public_repo_name': 'testrepo',
         })
         self.assertEqual(url, 'https://api.github.com/repos/myuser/testrepo')
 
-    def test_public_bug_tracker_field(self):
-        """Testing the GitHub public repository bug tracker field value"""
+    def test_get_repo_api_url_with_public_org_plan(self):
+        """Testing GitHub._get_repo_api_url with the public-org plan"""
+        url = self._get_repo_api_url('public-org', {
+            'github_public_org_name': 'myorg',
+            'github_public_org_repo_name': 'testrepo',
+        })
+        self.assertEqual(url, 'https://api.github.com/repos/myorg/testrepo')
+
+    def test_get_repo_api_url_with_private_plan(self):
+        """Testing GitHub._get_repo_api_url with the private plan"""
+        url = self._get_repo_api_url('private', {
+            'github_private_repo_name': 'testrepo',
+        })
+        self.assertEqual(url, 'https://api.github.com/repos/myuser/testrepo')
+
+    def test_get_repo_api_url_with_private_org_plan(self):
+        """Testing GitHub._get_repo_api_url with the private-org plan"""
+        url = self._get_repo_api_url('private-org', {
+            'github_private_org_name': 'myorg',
+            'github_private_org_repo_name': 'testrepo',
+        })
+        self.assertEqual(url, 'https://api.github.com/repos/myorg/testrepo')
+
+    def test_get_bug_tracker_field_with_public_plan(self):
+        """Testing GitHub.get_bug_tracker_field with the public plan"""
         self.assertTrue(
             self.service_class.get_bug_tracker_requires_username('public'))
         self.assertEqual(
@@ -61,26 +149,8 @@ class GitHubTests(ServiceTests):
             }),
             'http://github.com/myuser/myrepo/issues#issue/%s')
 
-    def test_public_org_field_values(self):
-        """Testing the GitHub public-org plan repository field values"""
-        fields = self._get_repository_fields('Git', plan='public-org', fields={
-            'github_public_org_repo_name': 'myrepo',
-            'github_public_org_name': 'myorg',
-        })
-        self.assertEqual(fields['path'], 'git://github.com/myorg/myrepo.git')
-        self.assertEqual(fields['mirror_path'],
-                         'git@github.com:myorg/myrepo.git')
-
-    def test_public_org_repo_api_url(self):
-        """Testing the GitHub public-org repository API URL"""
-        url = self._get_repo_api_url('public-org', {
-            'github_public_org_name': 'myorg',
-            'github_public_org_repo_name': 'testrepo',
-        })
-        self.assertEqual(url, 'https://api.github.com/repos/myorg/testrepo')
-
-    def test_public_org_bug_tracker_field(self):
-        """Testing the GitHub public-org repository bug tracker field value"""
+    def test_get_bug_tracker_field_with_public_org_plan(self):
+        """Testing GitHub.get_bug_tracker_field with the public-org plan"""
         self.assertFalse(
             self.service_class.get_bug_tracker_requires_username('public-org'))
         self.assertEqual(
@@ -90,23 +160,8 @@ class GitHubTests(ServiceTests):
             }),
             'http://github.com/myorg/myrepo/issues#issue/%s')
 
-    def test_private_field_values(self):
-        """Testing the GitHub private plan repository field values"""
-        fields = self._get_repository_fields('Git', plan='private', fields={
-            'github_private_repo_name': 'myrepo',
-        })
-        self.assertEqual(fields['path'], 'git@github.com:myuser/myrepo.git')
-        self.assertEqual(fields['mirror_path'], '')
-
-    def test_private_repo_api_url(self):
-        """Testing the GitHub private repository API URL"""
-        url = self._get_repo_api_url('private', {
-            'github_private_repo_name': 'testrepo',
-        })
-        self.assertEqual(url, 'https://api.github.com/repos/myuser/testrepo')
-
-    def test_private_bug_tracker_field(self):
-        """Testing the GitHub private repository bug tracker field value"""
+    def test_get_bug_tracker_field_with_private_plan(self):
+        """Testing GitHub.get_bug_tracker_field with the private plan"""
         self.assertTrue(
             self.service_class.get_bug_tracker_requires_username('private'))
         self.assertEqual(
@@ -116,26 +171,8 @@ class GitHubTests(ServiceTests):
             }),
             'http://github.com/myuser/myrepo/issues#issue/%s')
 
-    def test_private_org_field_values(self):
-        """Testing the GitHub private-org plan repository field values"""
-        fields = self._get_repository_fields(
-            'Git', plan='private-org', fields={
-                'github_private_org_repo_name': 'myrepo',
-                'github_private_org_name': 'myorg',
-            })
-        self.assertEqual(fields['path'], 'git@github.com:myorg/myrepo.git')
-        self.assertEqual(fields['mirror_path'], '')
-
-    def test_private_org_repo_api_url(self):
-        """Testing the GitHub private-org repository API URL"""
-        url = self._get_repo_api_url('private-org', {
-            'github_private_org_name': 'myorg',
-            'github_private_org_repo_name': 'testrepo',
-        })
-        self.assertEqual(url, 'https://api.github.com/repos/myorg/testrepo')
-
-    def test_private_org_bug_tracker_field(self):
-        """Testing the GitHub private-org repository bug tracker field value"""
+    def test_get_bug_tracker_field_with_private_org_plan(self):
+        """Testing GitHub.get_bug_tracker_field with the private-org plan"""
         self.assertFalse(self.service_class.get_bug_tracker_requires_username(
             'private-org'))
         self.assertEqual(
@@ -146,201 +183,271 @@ class GitHubTests(ServiceTests):
             'http://github.com/myorg/myrepo/issues#issue/%s')
 
     def test_check_repository_public(self):
-        """Testing GitHub check_repository with public repository"""
+        """Testing GitHub.check_repository with public repository"""
         self._test_check_repository(plan='public',
                                     github_public_repo_name='myrepo')
 
     def test_check_repository_private(self):
-        """Testing GitHub check_repository with private repository"""
+        """Testing GitHub.check_repository with private repository"""
         self._test_check_repository(plan='private',
                                     github_private_repo_name='myrepo')
 
     def test_check_repository_public_org(self):
-        """Testing GitHub check_repository with public org repository"""
+        """Testing GitHub.check_repository with public org repository"""
         self._test_check_repository(plan='public-org',
                                     github_public_org_name='myorg',
                                     github_public_org_repo_name='myrepo',
-                                    expected_user='myorg')
+                                    expected_owner='myorg')
 
     def test_check_repository_private_org(self):
-        """Testing GitHub check_repository with private org repository"""
+        """Testing GitHub.check_repository with private org repository"""
         self._test_check_repository(plan='private-org',
                                     github_private_org_name='myorg',
                                     github_private_org_repo_name='myrepo',
-                                    expected_user='myorg')
+                                    expected_owner='myorg')
 
     def test_check_repository_public_not_found(self):
-        """Testing GitHub check_repository with not found error and public
-        repository"""
+        """Testing GitHub.check_repository with not found error and public
+        repository
+        """
         self._test_check_repository_error(
             plan='public',
             github_public_repo_name='myrepo',
             http_status=404,
             payload=b'{"message": "Not Found"}',
+            expected_url='https://api.github.com/repos/myuser/myrepo',
             expected_error='A repository with this name was not found, '
                            'or your user may not own it.')
 
     def test_check_repository_private_not_found(self):
-        """Testing GitHub check_repository with not found error and private
-        repository"""
+        """Testing GitHub.check_repository with not found error and private
+        repository
+        """
         self._test_check_repository_error(
             plan='private',
             github_private_repo_name='myrepo',
             http_status=404,
             payload=b'{"message": "Not Found"}',
+            expected_url='https://api.github.com/repos/myuser/myrepo',
             expected_error='A repository with this name was not found, '
                            'or your user may not own it.')
 
     def test_check_repository_public_org_not_found(self):
-        """Testing GitHub check_repository with not found error and
-        public organization repository"""
+        """Testing GitHub.check_repository with not found error and
+        public organization repository
+        """
         self._test_check_repository_error(
             plan='public-org',
             github_public_org_name='myorg',
             github_public_org_repo_name='myrepo',
             http_status=404,
             payload=b'{"message": "Not Found"}',
+            expected_url='https://api.github.com/repos/myorg/myrepo',
             expected_error='A repository with this organization or name '
                            'was not found.')
 
     def test_check_repository_private_org_not_found(self):
-        """Testing GitHub check_repository with not found error and
-        private organization repository"""
+        """Testing GitHub.check_repository with not found error and
+        private organization repository
+        """
         self._test_check_repository_error(
             plan='private-org',
             github_private_org_name='myorg',
             github_private_org_repo_name='myrepo',
             http_status=404,
             payload=b'{"message": "Not Found"}',
+            expected_url='https://api.github.com/repos/myorg/myrepo',
             expected_error='A repository with this organization or name '
                            'was not found, or your user may not have access '
                            'to it.')
 
     def test_check_repository_public_plan_private_repo(self):
-        """Testing GitHub check_repository with public plan and
-        private repository"""
+        """Testing GitHub.check_repository with public plan and
+        private repository
+        """
         self._test_check_repository_error(
             plan='public',
             github_public_repo_name='myrepo',
             http_status=200,
             payload=b'{"private": true}',
+            expected_url='https://api.github.com/repos/myuser/myrepo',
             expected_error='This is a private repository, but you have '
                            'selected a public plan.')
 
     def test_check_repository_private_plan_public_repo(self):
-        """Testing GitHub check_repository with private plan and
-        public repository"""
+        """Testing GitHub.check_repository with private plan and
+        public repository
+        """
         self._test_check_repository_error(
             plan='private',
             github_private_repo_name='myrepo',
             http_status=200,
             payload=b'{"private": false}',
+            expected_url='https://api.github.com/repos/myuser/myrepo',
             expected_error='This is a public repository, but you have '
                            'selected a private plan.')
 
     def test_check_repository_public_org_plan_private_repo(self):
-        """Testing GitHub check_repository with public organization plan and
-        private repository"""
+        """Testing GitHub.check_repository with public organization plan and
+        private repository
+        """
         self._test_check_repository_error(
             plan='public-org',
             github_public_org_name='myorg',
             github_public_org_repo_name='myrepo',
             http_status=200,
             payload=b'{"private": true}',
+            expected_url='https://api.github.com/repos/myorg/myrepo',
             expected_error='This is a private repository, but you have '
                            'selected a public plan.')
 
     def test_check_repository_private_org_plan_public_repo(self):
-        """Testing GitHub check_repository with private organization plan and
-        public repository"""
+        """Testing GitHub.check_repository with private organization plan and
+        public repository
+        """
         self._test_check_repository_error(
             plan='private-org',
             github_private_org_name='myorg',
             github_private_org_repo_name='myrepo',
             http_status=200,
             payload=b'{"private": false}',
+            expected_url='https://api.github.com/repos/myorg/myrepo',
             expected_error='This is a public repository, but you have '
                            'selected a private plan.')
 
-    def test_authorization(self):
-        """Testing that GitHub account authorization sends expected data"""
-        http_post_data = {}
+    def test_authorize(self):
+        """Testing GitHub.authorize"""
+        paths = {
+            '/user': {
+                'headers': {
+                    str('X-OAuth-Scopes'): str('user, repo, admin:repo_hook'),
+                },
+                'payload': b'{}',
+            },
+        }
 
-        def _http_post(self, *args, **kwargs):
-            http_post_data['args'] = args
-            http_post_data['kwargs'] = kwargs
+        hosting_account = self.create_hosting_account(data={})
+        self.assertFalse(hosting_account.is_authorized)
 
-            return json.dumps({
-                'id': 1,
-                'url': 'https://api.github.com/authorizations/1',
-                'scopes': ['user', 'repo'],
+        with self.setup_http_test(self.make_handler_for_paths(paths),
+                                  hosting_account=hosting_account,
+                                  expected_http_calls=1) as ctx:
+            ctx.service.authorize(
+                username='myuser',
+                password='abcde12345abcde12345abcde12345abcde12345')
+
+        self.assertTrue(hosting_account.is_authorized)
+
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/user',
+            method='GET',
+            username='myuser',
+            password='abcde12345abcde12345abcde12345abcde12345')
+
+        self.assertIn('personal_token', hosting_account.data)
+        self.assertNotIn('authorizations', hosting_account.data)
+        self.assertEqual(
+            decrypt_password(hosting_account.data['personal_token']),
+            'abcde12345abcde12345abcde12345abcde12345')
+
+    def test_authorize_with_missing_scopes(self):
+        """Testing GitHub.authorize with missing scopes"""
+        paths = {
+            '/user': {
+                'headers': {
+                    str('X-OAuth-Scopes'): str('user, foobar'),
+                },
+                'payload': b'{}',
+            },
+        }
+
+        hosting_account = self.create_hosting_account(data={})
+        self.assertFalse(hosting_account.is_authorized)
+
+        message = (
+            'This GitHub Personal Access Token must have the following '
+            'scopes enabled: admin:repo_hook, repo'
+        )
+
+        with self.setup_http_test(self.make_handler_for_paths(paths),
+                                  hosting_account=hosting_account,
+                                  expected_http_calls=1) as ctx:
+            with self.assertRaisesMessage(AuthorizationError, message):
+                ctx.service.authorize(
+                    username='myuser',
+                    password='abcde12345abcde12345abcde12345abcde12345')
+
+        self.assertFalse(hosting_account.is_authorized)
+
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/user',
+            method='GET',
+            username='myuser',
+            password='abcde12345abcde12345abcde12345abcde12345')
+
+        self.assertNotIn('personal_token', hosting_account.data)
+        self.assertNotIn('authorizations', hosting_account.data)
+
+    def test_is_authorized_with_personal_token(self):
+        """Testing GitHub.is_authorized with personal access token"""
+        hosting_account = self.create_hosting_account(data={
+            'personal_token': encrypt_password('abc123'),
+        })
+        self.assertTrue(hosting_account.is_authorized)
+
+    def test_is_authorized_with_legacy_authorization(self):
+        """Testing GitHub.is_authorized with legacy authorization token"""
+        hosting_account = self.create_hosting_account(data={
+            'authorization': {
                 'token': 'abc123',
-                'note': '',
-                'note_url': '',
-                'updated_at': '2012-05-04T03:30:00Z',
-                'created_at': '2012-05-04T03:30:00Z',
-            }), {}
+            },
+        })
+        self.assertTrue(hosting_account.is_authorized)
 
-        account = HostingServiceAccount(service_name=self.service_name,
-                                        username='myuser')
-        service = account.service
+    def test_is_authorized_without_tokens(self):
+        """Testing GitHub.is_authorized with legacy authorization token"""
+        hosting_account = self.create_hosting_account(data={
+            'authorizations': {},
+        })
+        self.assertFalse(hosting_account.is_authorized)
 
-        self.spy_on(service.client.http_post, call_fake=_http_post)
+    def test_api_with_personal_accesstoken(self):
+        """Testing GitHub API access with personal access token"""
+        with self.setup_http_test(payload=b'{}',
+                                  expected_http_calls=1) as ctx:
+            ctx.hosting_account.data = {
+                'personal_token': encrypt_password('my-personal-token'),
+            }
+            ctx.client.api_get('https://api.github.com/user')
 
-        self.assertFalse(account.is_authorized)
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/user',
+            username='myuser',
+            password='my-personal-token')
 
-        service.authorize('myuser', 'mypass', None)
-        self.assertTrue(account.is_authorized)
+    def test_api_with_legacy_auth_token(self):
+        """Testing GitHub API access with legacy auth tokens"""
+        with self.setup_http_test(payload=b'{}',
+                                  expected_http_calls=1) as ctx:
+            ctx.hosting_account.data = {
+                'authorization': {
+                    'token': 'my-legacy-token',
+                },
+            }
+            ctx.client.api_get('https://api.github.com/user')
 
-        self.assertEqual(http_post_data['kwargs']['url'],
-                         'https://api.github.com/authorizations')
-        self.assertEqual(http_post_data['kwargs']['username'], 'myuser')
-        self.assertEqual(http_post_data['kwargs']['password'], 'mypass')
-
-    def test_authorization_with_client_info(self):
-        """Testing that GitHub account authorization with registered client
-        info
-        """
-        http_post_data = {}
-        client_id = '<my client id>'
-        client_secret = '<my client secret>'
-
-        def _http_post(self, *args, **kwargs):
-            http_post_data['args'] = args
-            http_post_data['kwargs'] = kwargs
-
-            return json.dumps({
-                'id': 1,
-                'url': 'https://api.github.com/authorizations/1',
-                'scopes': ['user', 'repo'],
-                'token': 'abc123',
-                'note': '',
-                'note_url': '',
-                'updated_at': '2012-05-04T03:30:00Z',
-                'created_at': '2012-05-04T03:30:00Z',
-            }), {}
-
-        account = HostingServiceAccount(service_name=self.service_name,
-                                        username='myuser')
-        service = account.service
-
-        self.spy_on(service.client.http_post, call_fake=_http_post)
-
-        self.assertFalse(account.is_authorized)
-
-        with self.settings(GITHUB_CLIENT_ID=client_id,
-                           GITHUB_CLIENT_SECRET=client_secret):
-            service.authorize('myuser', 'mypass', None)
-
-        self.assertTrue(account.is_authorized)
-
-        body = json.loads(http_post_data['kwargs']['body'])
-        self.assertEqual(body['client_id'], client_id)
-        self.assertEqual(body['client_secret'], client_secret)
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/user',
+            username='myuser',
+            password='my-legacy-token')
 
     def test_get_branches(self):
-        """Testing GitHub get_branches implementation"""
-        branches_api_response = json.dumps([
+        """Testing GitHub.get_branches"""
+        payload = self.dump_json([
             {
                 'ref': 'refs/heads/master',
                 'object': {
@@ -367,26 +474,17 @@ class GitHubTests(ServiceTests):
             },
         ])
 
-        def _http_get(self, *args, **kwargs):
-            return branches_api_response, None
+        with self.setup_http_test(payload=payload,
+                                  expected_http_calls=1) as ctx:
+            repository = ctx.create_repository()
+            branches = ctx.service.get_branches(repository)
 
-        account = self._get_hosting_account()
-        account.data['authorization'] = {'token': 'abc123'}
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/repos/myuser/myrepo/git/refs/heads',
+            username='myuser',
+            password='abc123')
 
-        repository = Repository(hosting_account=account)
-        repository.extra_data = {
-            'repository_plan': 'public',
-            'github_public_repo_name': 'myrepo',
-        }
-
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
-
-        branches = service.get_branches(repository)
-
-        self.assertTrue(service.client.http_get.called)
-
-        self.assertEqual(len(branches), 3)
         self.assertEqual(
             branches,
             [
@@ -401,9 +499,126 @@ class GitHubTests(ServiceTests):
                        default=False),
             ])
 
+    def test_get_branches_master_default(self):
+        """Testing GitHub.get_branches master default"""
+        payload = self.dump_json([
+            {
+                'ref': 'refs/heads/main',
+                'object': {
+                    'sha': '92463764015ef463b4b6d1a1825fee7aeec8cb15',
+                }
+            },
+            {
+                'ref': 'refs/heads/master',
+                'object': {
+                    'sha': '859d4e148ce3ce60bbda6622cdbe5c2c2f8d9817',
+                }
+            },
+        ])
+
+        with self.setup_http_test(payload=payload,
+                                  expected_http_calls=1) as ctx:
+            repository = ctx.create_repository()
+            branches = ctx.service.get_branches(repository)
+
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/repos/myuser/myrepo/git/refs/heads',
+            username='myuser',
+            password='abc123')
+
+        self.assertEqual(
+            branches,
+            [
+                Branch(id='main',
+                       commit='92463764015ef463b4b6d1a1825fee7aeec8cb15',
+                       default=False),
+                Branch(id='master',
+                       commit='859d4e148ce3ce60bbda6622cdbe5c2c2f8d9817',
+                       default=True),
+            ])
+
+    def test_get_branches_main_default(self):
+        """Testing GitHub.get_branches main default"""
+        payload = self.dump_json([
+            {
+                'ref': 'refs/heads/other',
+                'object': {
+                    'sha': '92463764015ef463b4b6d1a1825fee7aeec8cb15',
+                }
+            },
+            {
+                'ref': 'refs/heads/main',
+                'object': {
+                    'sha': '859d4e148ce3ce60bbda6622cdbe5c2c2f8d9817',
+                }
+            },
+        ])
+
+        with self.setup_http_test(payload=payload,
+                                  expected_http_calls=1) as ctx:
+            repository = ctx.create_repository()
+            branches = ctx.service.get_branches(repository)
+
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/repos/myuser/myrepo/git/refs/heads',
+            username='myuser',
+            password='abc123')
+
+        self.assertEqual(
+            branches,
+            [
+                Branch(id='other',
+                       commit='92463764015ef463b4b6d1a1825fee7aeec8cb15',
+                       default=False),
+                Branch(id='main',
+                       commit='859d4e148ce3ce60bbda6622cdbe5c2c2f8d9817',
+                       default=True),
+            ])
+
+    def test_get_branches_default_fallback(self):
+        """Testing GitHub.get_branches default fallback"""
+        payload = self.dump_json([
+            {
+                'ref': 'refs/heads/branch1',
+                'object': {
+                    'sha': '859d4e148ce3ce60bbda6622cdbe5c2c2f8d9817',
+                }
+            },
+            {
+                'ref': 'refs/heads/branch2',
+                'object': {
+                    'sha': '92463764015ef463b4b6d1a1825fee7aeec8cb15',
+                }
+            },
+        ])
+
+        with self.setup_http_test(payload=payload,
+                                  expected_http_calls=1) as ctx:
+            repository = ctx.create_repository()
+            branches = ctx.service.get_branches(repository)
+
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/repos/myuser/myrepo/git/refs/heads',
+            username='myuser',
+            password='abc123')
+
+        self.assertEqual(
+            branches,
+            [
+                Branch(id='branch1',
+                       commit='859d4e148ce3ce60bbda6622cdbe5c2c2f8d9817',
+                       default=True),
+                Branch(id='branch2',
+                       commit='92463764015ef463b4b6d1a1825fee7aeec8cb15',
+                       default=False),
+            ])
+
     def test_get_commits(self):
-        """Testing GitHub get_commits implementation"""
-        commits_api_response = json.dumps([
+        """Testing GitHub.get_commits"""
+        payload = self.dump_json([
             {
                 'commit': {
                     'author': {'name': 'Christian Hammond'},
@@ -440,268 +655,282 @@ class GitHubTests(ServiceTests):
             }
         ])
 
-        def _http_get(self, *args, **kwargs):
-            return commits_api_response, None
+        with self.setup_http_test(payload=payload,
+                                  expected_http_calls=1) as ctx:
+            repository = ctx.create_repository()
+            commits = ctx.service.get_commits(
+                repository=repository,
+                start='859d4e148ce3ce60bbda6622cdbe5c2c2f8d9817')
 
-        account = self._get_hosting_account()
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
+        ctx.assertHTTPCall(
+            0,
+            url=('https://api.github.com/repos/myuser/myrepo/commits'
+                 '?sha=859d4e148ce3ce60bbda6622cdbe5c2c2f8d9817'),
+            username='myuser',
+            password='abc123')
 
-        account.data['authorization'] = {'token': 'abc123'}
+        self.assertEqual(
+            commits,
+            [
+                Commit(author_name='Christian Hammond',
+                       date='2013-06-25T23:31:22Z',
+                       id='859d4e148ce3ce60bbda6622cdbe5c2c2f8d9817',
+                       message=('Fixed the bug number for the '
+                                'blacktriangledown bug.'),
+                       parent='92463764015ef463b4b6d1a1825fee7aeec8cb15'),
+                Commit(author_name='Christian Hammond',
+                       date='2013-06-25T23:30:59Z',
+                       id='92463764015ef463b4b6d1a1825fee7aeec8cb15',
+                       message="Merge branch 'release-1.7.x'",
+                       parent='f5a35f1d8a8dcefb336a8e3211334f1f50ea7792'),
+                Commit(author_name='David Trowbridge',
+                       date='2013-06-25T22:41:09Z',
+                       id='f5a35f1d8a8dcefb336a8e3211334f1f50ea7792',
+                       message=('Add DIFF_PARSE_ERROR to the '
+                                'ValidateDiffResource.create error list.'),
+                       parent=''),
+            ])
 
-        repository = Repository(hosting_account=account)
-        repository.extra_data = {
-            'repository_plan': 'public',
-            'github_public_repo_name': 'myrepo',
-        }
-
-        commits = service.get_commits(
-            repository, start='859d4e148ce3ce60bbda6622cdbe5c2c2f8d9817')
-
-        self.assertTrue(service.client.http_get.called)
-
-        self.assertEqual(len(commits), 3)
-        self.assertEqual(commits[0].parent, commits[1].id)
-        self.assertEqual(commits[1].parent, commits[2].id)
-        self.assertEqual(commits[0].date, '2013-06-25T23:31:22Z')
-        self.assertEqual(commits[1].id,
-                         '92463764015ef463b4b6d1a1825fee7aeec8cb15')
-        self.assertEqual(commits[2].author_name, 'David Trowbridge')
-        self.assertEqual(commits[2].parent, '')
+        for commit in commits:
+            self.assertIsNone(commit.diff)
 
     def test_get_change(self):
-        """Testing GitHub get_change implementation"""
+        """Testing GitHub.get_change"""
         commit_sha = '1c44b461cebe5874a857c51a4a13a849a4d1e52d'
         parent_sha = '44568f7d33647d286691517e6325fea5c7a21d5e'
         tree_sha = '56e25e58380daf9b4dfe35677ae6043fe1743922'
 
-        commits_api_response = json.dumps([
-            {
-                'commit': {
-                    'author': {'name': 'David Trowbridge'},
-                    'committer': {'date': '2013-06-25T23:31:22Z'},
-                    'message': 'Move .clearfix to defs.less',
-                },
-                'sha': commit_sha,
-                'parents': [{'sha': parent_sha}],
+        paths = {
+            '/repos/myuser/myrepo/commits': {
+                'payload': self.dump_json([
+                    {
+                        'commit': {
+                            'author': {'name': 'David Trowbridge'},
+                            'committer': {'date': '2013-06-25T23:31:22Z'},
+                            'message': 'Move .clearfix to defs.less',
+                        },
+                        'sha': commit_sha,
+                        'parents': [{'sha': parent_sha}],
+                    },
+                ])
             },
-        ])
-
-        compare_api_response = json.dumps({
-            'base_commit': {
-                'commit': {
-                    'tree': {'sha': tree_sha},
-                },
+            '/repos/myuser/myrepo/compare/%s...%s' % (parent_sha,
+                                                      commit_sha): {
+                'payload': self.dump_json({
+                    'base_commit': {
+                        'commit': {
+                            'tree': {'sha': tree_sha},
+                        },
+                    },
+                    'files': [
+                        {
+                            'sha': '4344b3ad41b171ea606e88e9665c34cca602affb',
+                            'filename': 'reviewboard/static/rb/css/defs.less',
+                            'status': 'modified',
+                            'patch': (
+                                '@@ -182,4 +182,6 @@\n'
+                                ' }\n'
+                                ' \n'
+                                '+.foo {\n'
+                                '+}\n'
+                                ' \n'
+                                ' table {'
+                            ),
+                        },
+                        {
+                            'sha': '8e3129277b018b169cb8d13771433fbcd165a17c',
+                            'filename': ('reviewboard/static/rb/css/'
+                                         'reviews.less'),
+                            'status': 'modified',
+                            'patch': (
+                                '@@ -1311,6 +1311,4 @@\n'
+                                ' }\n'
+                                ' \n'
+                                '-.bar {\n'
+                                '-}\n'
+                                ' \n'
+                                ' h1 {'
+                            ),
+                        },
+                        {
+                            'sha': '17ba0791499db908433b80f37c5fbc89b870084b',
+                            'filename': 'new_filename',
+                            'previous_filename': 'old_filename',
+                            'status': 'renamed',
+                            'patch': (
+                                '@@ -1,1 +1,1 @@\n'
+                                '- foo\n'
+                                '+ bar'
+                            ),
+                        },
+                    ],
+                }),
             },
-            'files': [
-                {
-                    'sha': '4344b3ad41b171ea606e88e9665c34cca602affb',
-                    'filename': 'reviewboard/static/rb/css/defs.less',
-                    'status': 'modified',
-                    'patch': dedent("""\
-                        @@ -182,4 +182,23 @@
-                         }
-
-
-                        +/* Add a rule for clearing floats, */
-                        +.clearfix {
-                        +  display: inline-block;
-                        +
-                        +  &:after {
-                        +    clear: both;
-                        +    content: \".\";
-                        +    display: block;
-                        +    height: 0;
-                        +    visibility: hidden;
-                        +  }
-                        +}
-                        +
-                        +/* Hides from IE-mac \\*/
-                        +* html .clearfix {height: 1%;}
-                        +.clearfix {display: block;}
-                        +/* End hide from IE-mac */
-                        +
-                        +
-                         // vim: set et ts=2 sw=2:"""),
-                },
-                {
-                    'sha': '8e3129277b018b169cb8d13771433fbcd165a17c',
-                    'filename': 'reviewboard/static/rb/css/reviews.less',
-                    'status': 'modified',
-                    'patch': dedent("""\
-                        @@ -1311,24 +1311,6 @@
-                           .border-radius(8px);
-                         }
-
-                        -/* Add a rule for clearing floats, */
-                        -.clearfix {
-                        -  display: inline-block;
-                        -
-                        -  &:after {
-                        -    clear: both;
-                        -    content: \".\";
-                        -    display: block;
-                        -    height: 0;
-                        -    visibility: hidden;
-                        -  }
-                        -}
-                        -
-                        -/* Hides from IE-mac \\*/
-                        -* html .clearfix {height: 1%;}
-                        -.clearfix {display: block;}
-                        -/* End hide from IE-mac */
-                        -
-
-                         /****************************************************
-                          * Issue Summary"""),
-                },
-            ]
-        })
-
-        trees_api_response = json.dumps({
-            'tree': [
-                {
-                    'path': 'reviewboard/static/rb/css/defs.less',
-                    'sha': '830a40c3197223c6a0abb3355ea48891a1857bfd',
-                },
-                {
-                    'path': 'reviewboard/static/rb/css/reviews.less',
-                    'sha': '535cd2c4211038d1bb8ab6beaed504e0db9d7e62',
-                },
-            ],
-        })
-
-        # This has to be a list to avoid python's hinky treatment of scope of
-        # variables assigned within a closure.
-        step = [1]
-
-        def _http_get(service, url, *args, **kwargs):
-            parsed = urlparse(url)
-            if parsed.path == '/repos/myuser/myrepo/commits':
-                self.assertEqual(step[0], 1)
-                step[0] += 1
-
-                query = parsed.query.split('&')
-                self.assertIn(('sha=%s' % commit_sha), query)
-
-                return commits_api_response, None
-            elif parsed.path.startswith('/repos/myuser/myrepo/compare/'):
-                self.assertEqual(step[0], 2)
-                step[0] += 1
-
-                revs = parsed.path.split('/')[-1].split('...')
-                self.assertEqual(revs[0], parent_sha)
-                self.assertEqual(revs[1], commit_sha)
-
-                return compare_api_response, None
-            elif parsed.path.startswith('/repos/myuser/myrepo/git/trees/'):
-                self.assertEqual(step[0], 3)
-                step[0] += 1
-
-                self.assertEqual(parsed.path.split('/')[-1], tree_sha)
-
-                return trees_api_response, None
-            else:
-                print(parsed)
-                self.fail('Got an unexpected GET request')
-
-        account = self._get_hosting_account()
-        account.data['authorization'] = {'token': 'abc123'}
-
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
-
-        repository = Repository(hosting_account=account)
-        repository.extra_data = {
-            'repository_plan': 'public',
-            'github_public_repo_name': 'myrepo',
+            '/repos/myuser/myrepo/git/trees/%s' % tree_sha: {
+                'payload': self.dump_json({
+                    'tree': [
+                        {
+                            'path': 'reviewboard/static/rb/css/defs.less',
+                            'sha': '830a40c3197223c6a0abb3355ea48891a1857bfd',
+                        },
+                        {
+                            'path': 'reviewboard/static/rb/css/reviews.less',
+                            'sha': '535cd2c4211038d1bb8ab6beaed504e0db9d7e62',
+                        },
+                        {
+                            'path': 'old_filename',
+                            'sha': '356a192b7913b04c54574d18c28d46e6395428ab',
+                        }
+                    ],
+                }),
+            },
         }
 
-        change = service.get_change(repository, commit_sha)
+        with self.setup_http_test(self.make_handler_for_paths(paths),
+                                  expected_http_calls=3) as ctx:
+            repository = ctx.create_repository()
+            change = ctx.service.get_change(repository=repository,
+                                            revision=commit_sha)
 
-        self.assertTrue(service.client.http_get.called)
+        ctx.assertHTTPCall(
+            0,
+            url=('https://api.github.com/repos/myuser/myrepo/commits'
+                 '?sha=1c44b461cebe5874a857c51a4a13a849a4d1e52d'),
+            username='myuser',
+            password='abc123')
 
-        self.assertEqual(change.message, 'Move .clearfix to defs.less')
-        self.assertEqual(md5(change.diff.encode('utf-8')).hexdigest(),
-                         '0dd1bde0a60c0a7bb92c27b50f51fcb6')
+        ctx.assertHTTPCall(
+            1,
+            url=('https://api.github.com/repos/myuser/myrepo/compare/'
+                 '44568f7d33647d286691517e6325fea5c7a21d5e...'
+                 '1c44b461cebe5874a857c51a4a13a849a4d1e52d'),
+            username='myuser',
+            password='abc123')
 
-    def test_get_change_exception(self):
-        """Testing GitHub get_change exception types"""
-        def _http_get(service, url, *args, **kwargs):
-            raise Exception('Not Found')
+        ctx.assertHTTPCall(
+            2,
+            url=('https://api.github.com/repos/myuser/myrepo/git/trees/'
+                 '56e25e58380daf9b4dfe35677ae6043fe1743922?recursive=1'),
+            username='myuser',
+            password='abc123')
 
-        account = self._get_hosting_account()
-        account.data['authorization'] = {'token': 'abc123'}
+        self.assertEqual(
+            change,
+            Commit(author_name='David Trowbridge',
+                   date='2013-06-25T23:31:22Z',
+                   id='1c44b461cebe5874a857c51a4a13a849a4d1e52d',
+                   message='Move .clearfix to defs.less',
+                   parent='44568f7d33647d286691517e6325fea5c7a21d5e'))
+        self.assertEqual(
+            change.diff,
+            b'diff --git a/reviewboard/static/rb/css/defs.less'
+            b' b/reviewboard/static/rb/css/defs.less\n'
+            b'index 830a40c3197223c6a0abb3355ea48891a1857bfd'
+            b'..4344b3ad41b171ea606e88e9665c34cca602affb 100644\n'
+            b'--- a/reviewboard/static/rb/css/defs.less\n'
+            b'+++ b/reviewboard/static/rb/css/defs.less\n'
+            b'@@ -182,4 +182,6 @@\n'
+            b' }\n'
+            b' \n'
+            b'+.foo {\n'
+            b'+}\n'
+            b' \n'
+            b' table {\n'
+            b'diff --git a/reviewboard/static/rb/css/reviews.less'
+            b' b/reviewboard/static/rb/css/reviews.less\n'
+            b'index 535cd2c4211038d1bb8ab6beaed504e0db9d7e62'
+            b'..8e3129277b018b169cb8d13771433fbcd165a17c 100644\n'
+            b'--- a/reviewboard/static/rb/css/reviews.less\n'
+            b'+++ b/reviewboard/static/rb/css/reviews.less\n'
+            b'@@ -1311,6 +1311,4 @@\n'
+            b' }\n'
+            b' \n'
+            b'-.bar {\n'
+            b'-}\n'
+            b' \n'
+            b' h1 {\n'
+            b'diff --git a/new_filename b/new_filename\n'
+            b'rename from old_filename\n'
+            b'rename to new_filename\n'
+            b'index 356a192b7913b04c54574d18c28d46e6395428ab'
+            b'..17ba0791499db908433b80f37c5fbc89b870084b\n'
+            b'--- a/old_filename\n'
+            b'+++ b/new_filename\n'
+            b'@@ -1,1 +1,1 @@\n'
+            b'- foo\n'
+            b'+ bar\n')
 
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
+    def test_get_change_with_not_found(self):
+        """Testing GitHub.get_change with commit not found"""
+        with self.setup_http_test(status_code=404,
+                                  payload=b'{"message": "Not Found"}',
+                                  expected_http_calls=1) as ctx:
+            with self.assertRaisesMessage(SCMError, 'Not Found'):
+                repository = ctx.create_repository()
+                ctx.service.get_change(
+                    repository=repository,
+                    revision='1c44b461cebe5874a857c51a4a13a849a4d1e52d')
 
-        repository = Repository(hosting_account=account)
-        repository.extra_data = {
-            'repository_plan': 'public',
-            'github_public_repo_name': 'myrepo',
-        }
+        ctx.assertHTTPCall(
+            0,
+            url=('https://api.github.com/repos/myuser/myrepo/commits'
+                 '?sha=1c44b461cebe5874a857c51a4a13a849a4d1e52d'),
+            username='myuser',
+            password='abc123')
 
-        service = account.service
-        commit_sha = '1c44b461cebe5874a857c51a4a13a849a4d1e52d'
-        self.assertRaisesMessage(
-            SCMError, 'Not Found',
-            lambda: service.get_change(repository, commit_sha))
-
-    def test_get_remote_repositories_with_owner(self, **kwargs):
+    def test_get_remote_repositories_with_owner(self):
         """Testing GitHub.get_remote_repositories with requesting
         authenticated user's repositories
         """
-        repos1 = [
-            {
-                'id': 1,
-                'owner': {
-                    'login': 'myuser',
+        base_url = 'https://api.github.com/user/repos'
+        paths = {
+            '/user/repos': {
+                'payload': self.dump_json([
+                    {
+                        'id': 1,
+                        'owner': {
+                            'login': 'myuser',
+                        },
+                        'name': 'myrepo',
+                        'clone_url': 'myrepo_path',
+                        'mirror_url': 'myrepo_mirror',
+                        'private': 'false'
+                    },
+                ]),
+                'headers': {
+                    b'Link': b'<%s?page=2>; rel="next"' % base_url,
                 },
-                'name': 'myrepo',
-                'clone_url': 'myrepo_path',
-                'mirror_url': 'myrepo_mirror',
-                'private': 'false'
-            }
-        ]
-
-        repos2 = [
-            {
-                'id': 2,
-                'owner': {
-                    'login': 'myuser',
+            },
+            '/user/repos?page=2': {
+                'payload': self.dump_json([
+                    {
+                        'id': 2,
+                        'owner': {
+                            'login': 'myuser',
+                        },
+                        'name': 'myrepo2',
+                        'clone_url': 'myrepo_path2',
+                        'mirror_url': 'myrepo_mirror2',
+                        'private': 'true'
+                    },
+                ]),
+                'headers': {
+                    b'Link': b'<%s?page=1>; rel="prev"' % base_url,
                 },
-                'name': 'myrepo2',
-                'clone_url': 'myrepo_path2',
-                'mirror_url': 'myrepo_mirror2',
-                'private': 'true'
-            }
-        ]
-
-        def _http_get(service, url, *args, **kwargs):
-            base_url = 'https://api.github.com/user/repos?access_token=123'
-            self.assertIn(url, [base_url, '%s&page=2' % base_url])
-
-            if url == base_url:
-                return json.dumps(repos1), {
-                    'Link': '<%s&page=2>; rel="next"' % base_url,
-                }
-            else:
-                return json.dumps(repos2), {
-                    'Link': '<%s&page=1>; rel="prev"' % base_url,
-                }
-
-        account = self._get_hosting_account()
-        account.data['authorization'] = {
-            'token': '123',
+            },
         }
 
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
+        # Fetch and check the first page.
+        with self.setup_http_test(self.make_handler_for_paths(paths),
+                                  expected_http_calls=1) as ctx:
+            paginator = ctx.service.get_remote_repositories('myuser')
 
-        paginator = service.get_remote_repositories('myuser')
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/user/repos',
+            username='myuser',
+            password='abc123')
 
-        # Check the first result.
         self.assertEqual(len(paginator.page_data), 1)
         self.assertFalse(paginator.has_prev)
         self.assertTrue(paginator.has_next)
@@ -715,8 +944,15 @@ class GitHubTests(ServiceTests):
         self.assertEqual(repo.path, 'myrepo_path')
         self.assertEqual(repo.mirror_path, 'myrepo_mirror')
 
-        # Check the second result.
+        # Fetch and check the second page.
         paginator.next()
+
+        ctx.assertHTTPCall(
+            1,
+            url='https://api.github.com/user/repos?page=2',
+            username='myuser',
+            password='abc123')
+
         self.assertEqual(len(paginator.page_data), 1)
         self.assertTrue(paginator.has_prev)
         self.assertFalse(paginator.has_next)
@@ -730,11 +966,11 @@ class GitHubTests(ServiceTests):
         self.assertEqual(repo.path, 'myrepo_path2')
         self.assertEqual(repo.mirror_path, 'myrepo_mirror2')
 
-    def test_get_remote_repositories_with_other_user(self, **kwargs):
-        """Testing GitHub.get_remote_repositories with requesting
-        user's repositories
+    def test_get_remote_repositories_with_other_user(self):
+        """Testing GitHub.get_remote_repositories with requesting user's
+        repositories
         """
-        repos1 = [
+        repos1 = self.dump_json([
             {
                 'id': 1,
                 'owner': {
@@ -745,30 +981,25 @@ class GitHubTests(ServiceTests):
                 'mirror_url': 'myrepo_mirror',
                 'private': 'false'
             }
-        ]
-        repos2 = []
+        ])
 
-        def _http_get(service, url, *args, **kwargs):
-            base_url = ('https://api.github.com/users/other/repos'
-                        '?access_token=123')
-
-            self.assertIn(url, [base_url, '%s&page=2' % base_url])
-
-            if url == base_url:
-                next_url = '<%s&page=2>; rel="next"' % base_url
-                return json.dumps(repos1), {'Link': next_url}
-            else:
-                return json.dumps(repos2), {}
-
-        account = self._get_hosting_account()
-        account.data['authorization'] = {
-            'token': '123',
+        headers = {
+            b'Link': (
+                b'<https://api.github.com/users/other/repos'
+                b'?page=2>; rel="next"'
+            ),
         }
 
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
+        with self.setup_http_test(payload=repos1,
+                                  headers=headers,
+                                  expected_http_calls=1) as ctx:
+            paginator = ctx.service.get_remote_repositories('other')
 
-        paginator = service.get_remote_repositories('other')
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/users/other/repos',
+            username='myuser',
+            password='abc123')
 
         self.assertEqual(len(paginator.page_data), 1)
         public_repo = paginator.page_data[0]
@@ -780,11 +1011,11 @@ class GitHubTests(ServiceTests):
         self.assertEqual(public_repo.path, 'myrepo_path')
         self.assertEqual(public_repo.mirror_path, 'myrepo_mirror')
 
-    def test_get_remote_repositories_with_org(self, **kwargs):
+    def test_get_remote_repositories_with_org(self):
         """Testing GitHub.get_remote_repositories with requesting
         organization's repositories
         """
-        repos = [
+        payload = self.dump_json([
             {
                 'id': 1,
                 'owner': {
@@ -805,23 +1036,19 @@ class GitHubTests(ServiceTests):
                 'mirror_url': 'myrepo_mirror2',
                 'private': 'true'
             }
-        ]
+        ])
 
-        def _http_get(service, url, *args, **kwargs):
-            self.assertEqual(
-                url,
-                'https://api.github.com/orgs/myorg/repos?access_token=123')
-            return json.dumps(repos), {}
+        with self.setup_http_test(payload=payload,
+                                  expected_http_calls=1) as ctx:
+            paginator = ctx.service.get_remote_repositories('myorg',
+                                                            'organization')
 
-        account = self._get_hosting_account()
-        account.data['authorization'] = {
-            'token': '123',
-        }
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/orgs/myorg/repos',
+            username='myuser',
+            password='abc123')
 
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
-
-        paginator = service.get_remote_repositories('myorg', 'organization')
         self.assertEqual(len(paginator.page_data), 2)
         public_repo, private_repo = paginator.page_data
 
@@ -841,74 +1068,54 @@ class GitHubTests(ServiceTests):
         self.assertEqual(private_repo.path, 'myrepo_path2')
         self.assertEqual(private_repo.mirror_path, 'myrepo_mirror2')
 
-    def test_get_remote_repositories_with_defaults(self, **kwargs):
+    def test_get_remote_repositories_with_defaults(self):
         """Testing GitHub.get_remote_repositories with default values"""
-        def _http_get(service, url, *args, **kwargs):
-            self.assertEqual(
-                url,
-                'https://api.github.com/user/repos?access_token=123')
+        with self.setup_http_test(payload=b'{}',
+                                  expected_http_calls=1) as ctx:
+            ctx.service.get_remote_repositories()
 
-            return b'{}', {}
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/user/repos',
+            username='myuser',
+            password='abc123')
 
-        account = self._get_hosting_account()
-        account.data['authorization'] = {
-            'token': '123',
-        }
-
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
-
-        service.get_remote_repositories()
-
-    def test_get_remote_repositories_with_filter(self, **kwargs):
+    def test_get_remote_repositories_with_filter(self):
         """Testing GitHub.get_remote_repositories with ?filter-type="""
-        def _http_get(service, url, *args, **kwargs):
-            self.assertEqual(url,
-                             'https://api.github.com/user/repos'
-                             '?access_token=123&type=private')
+        with self.setup_http_test(payload=b'[]',
+                                  expected_http_calls=1) as ctx:
+            ctx.service.get_remote_repositories('myuser',
+                                                filter_type='private')
 
-            return json.dumps([]), {}
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/user/repos?type=private',
+            username='myuser',
+            password='abc123')
 
-        account = self._get_hosting_account()
-        account.data['authorization'] = {
-            'token': '123',
-        }
-
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
-
-        service.get_remote_repositories('myuser', filter_type='private')
-
-    def test_get_remote_repository(self, **kwargs):
+    def test_get_remote_repository(self):
         """Testing GitHub.get_remote_repository"""
-        def _http_get(service, url, *args, **kwargs):
-            self.assertEqual(
-                url,
-                'https://api.github.com/repos/myuser/myrepo'
-                '?access_token=123')
+        payload = self.dump_json({
+            'id': 1,
+            'owner': {
+                'login': 'myuser',
+            },
+            'name': 'myrepo',
+            'clone_url': 'myrepo_path',
+            'mirror_url': 'myrepo_mirror',
+            'private': 'false'
+        })
 
-            repo_data = {
-                'id': 1,
-                'owner': {
-                    'login': 'myuser',
-                },
-                'name': 'myrepo',
-                'clone_url': 'myrepo_path',
-                'mirror_url': 'myrepo_mirror',
-                'private': 'false'
-            }
+        with self.setup_http_test(payload=payload,
+                                  expected_http_calls=1) as ctx:
+            remote_repository = \
+                ctx.service.get_remote_repository('myuser/myrepo')
 
-            return json.dumps(repo_data), {}
-
-        account = self._get_hosting_account()
-        account.data['authorization'] = {
-            'token': '123',
-        }
-
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
-
-        remote_repository = service.get_remote_repository('myuser/myrepo')
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/repos/myuser/myrepo',
+            username='myuser',
+            password='abc123')
 
         self.assertIsInstance(remote_repository, RemoteRepository)
         self.assertEqual(remote_repository.id, 'myuser/myrepo')
@@ -918,55 +1125,134 @@ class GitHubTests(ServiceTests):
         self.assertEqual(remote_repository.path, 'myrepo_path')
         self.assertEqual(remote_repository.mirror_path, 'myrepo_mirror')
 
-    def test_get_remote_repository_invalid(self, **kwargs):
+    def test_get_remote_repository_invalid(self):
         """Testing GitHub.get_remote_repository with invalid repository ID"""
-        def _http_get(service, url, *args, **kwargs):
-            self.assertEqual(
-                url,
-                'https://api.github.com/repos/myuser/invalid'
-                '?access_token=123')
+        with self.setup_http_test(status_code=404,
+                                  payload=b'{"message": "Not Found"}',
+                                  expected_http_calls=1) as ctx:
+            with self.assertRaises(ObjectDoesNotExist):
+                ctx.service.get_remote_repository('myuser/invalid')
 
-            payload = {
-                'message': 'Not Found',
-            }
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/repos/myuser/invalid',
+            username='myuser',
+            password='abc123')
 
-            raise HTTPError(url, 404, '', {}, StringIO(json.dumps(payload)))
+    def _test_check_repository(self, expected_owner='myuser', **kwargs):
+        """Test checking for a repository.
 
-        account = self._get_hosting_account()
-        account.data['authorization'] = {
-            'token': '123',
-        }
+        Args:
+            expected_owner (unicode):
+                The expected owner of the repository.
 
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
+            **kwargs (dict):
+                Keyword arguments to pass to
+                :py:meth:`check_repository()
+                <reviewboard.hostingsvcs.gitlab.GitLab.check_repository>`.
+        """
+        with self.setup_http_test(payload=b'{}',
+                                  expected_http_calls=1) as ctx:
+            ctx.service.check_repository(**kwargs)
 
-        self.assertRaises(ObjectDoesNotExist,
-                          service.get_remote_repository, 'myuser/invalid')
+        ctx.assertHTTPCall(
+            0,
+            url='https://api.github.com/repos/%s/myrepo' % expected_owner,
+            username='myuser',
+            password='abc123')
 
-    @add_fixtures(['test_users', 'test_scmtools'])
+    def _test_check_repository_error(self, http_status, payload, expected_url,
+                                     expected_error, **kwargs):
+        """Test error conditions when checking for a repository.
+
+        Args:
+            http_status (int):
+                The HTTP status to simulate returning.
+
+            payload (bytes):
+                The payload to return, if ``http_status`` is 200.
+
+            expected_url (unicode):
+                The expected URL accessed (minus any query strings).
+
+            expected_error (unicode):
+                The expected error message from a raised exception.
+
+            **kwargs (dict):
+                Keyword arguments to pass to
+                :py:meth:`check_repository()
+                <reviewboard.hostingsvcs.gitlab.GitLab.check_repository>`.
+        """
+        if http_status != 200:
+            payload = b'{"message": "not Found"}'
+
+        with self.setup_http_test(status_code=http_status,
+                                  payload=payload,
+                                  expected_http_calls=1) as ctx:
+            with self.assertRaisesMessage(RepositoryError, expected_error):
+                ctx.service.check_repository(**kwargs)
+
+        ctx.assertHTTPCall(
+            0,
+            url=expected_url,
+            username='myuser',
+            password='abc123')
+
+    def _get_repo_api_url(self, plan, fields):
+        """Return the base API URL for a repository.
+
+        Args:
+            plan (unicode):
+                The name of the plan.
+
+            fields (dict):
+                Fields containing repository information.
+
+        Returns:
+            unicode:
+            The API URL for the repository.
+        """
+        account = self.create_hosting_account()
+
+        repository = self.create_repository(
+            hosting_account=account,
+            extra_data={
+                'repository_plan': plan,
+            })
+
+        form = self.get_form(plan, fields)
+        form.save(repository)
+
+        return account.service._get_repo_api_url(repository)
+
+
+class CloseSubmittedHookTests(GitHubTestCase):
+    """Unit tests for the GitHub close-submitted webhook."""
+
+    fixtures = ['test_users', 'test_scmtools']
+
     def test_close_submitted_hook(self):
-        """Testing GitHub close_submitted hook"""
+        """Testing GitHub close_submitted hook with event=push"""
         self._test_post_commit_hook()
 
-    @add_fixtures(['test_site', 'test_users', 'test_scmtools'])
+    @add_fixtures(['test_site'])
     def test_close_submitted_hook_with_local_site(self):
-        """Testing GitHub close_submitted hook with a Local Site"""
+        """Testing GitHub close_submitted hook with event=push and using a
+        Local Site
+        """
         self._test_post_commit_hook(
             LocalSite.objects.get(name=self.local_site_name))
 
-    @add_fixtures(['test_site', 'test_users', 'test_scmtools'])
+    @add_fixtures(['test_site'])
     def test_close_submitted_hook_with_unpublished_review_request(self):
-        """Testing GitHub close_submitted hook with an un-published review
-        request
+        """Testing GitHub close_submitted hook with event=push and an
+        un-published review request
         """
         self._test_post_commit_hook(publish=False)
 
-    @add_fixtures(['test_users', 'test_scmtools'])
     def test_close_submitted_hook_ping(self):
-        """Testing GitHub close_submitted hook ping"""
-        account = self._get_hosting_account()
-        account.save()
-
+        """Testing GitHub close_submitted hook with event=ping"""
+        account = self.create_hosting_account()
         repository = self.create_repository(hosting_account=account)
 
         review_request = self.create_review_request(repository=repository,
@@ -982,7 +1268,9 @@ class GitHubTests(ServiceTests):
             })
 
         response = self._post_commit_hook_payload(
-            url, review_request, repository.get_or_create_hooks_uuid(),
+            post_url=url,
+            review_request_url=review_request.get_absolute_url(),
+            secret=repository.get_or_create_hooks_uuid(),
             event='ping')
         self.assertEqual(response.status_code, 200)
 
@@ -991,9 +1279,10 @@ class GitHubTests(ServiceTests):
         self.assertEqual(review_request.status, review_request.PENDING_REVIEW)
         self.assertEqual(review_request.changedescs.count(), 0)
 
-    @add_fixtures(['test_users', 'test_scmtools'])
     def test_close_submitted_hook_with_invalid_repo(self):
-        """Testing GitHub close_submitted hook with invalid repository"""
+        """Testing GitHub close_submitted hook with event=push and invalid
+        repository
+        """
         repository = self.create_repository()
 
         review_request = self.create_review_request(repository=repository,
@@ -1009,7 +1298,9 @@ class GitHubTests(ServiceTests):
             })
 
         response = self._post_commit_hook_payload(
-            url, review_request, repository.get_or_create_hooks_uuid())
+            post_url=url,
+            review_request_url=review_request.get_absolute_url(),
+            secret=repository.get_or_create_hooks_uuid())
         self.assertEqual(response.status_code, 404)
 
         review_request = ReviewRequest.objects.get(pk=review_request.pk)
@@ -1017,10 +1308,12 @@ class GitHubTests(ServiceTests):
         self.assertEqual(review_request.status, review_request.PENDING_REVIEW)
         self.assertEqual(review_request.changedescs.count(), 0)
 
-    @add_fixtures(['test_users', 'test_scmtools'])
     def test_close_submitted_hook_with_invalid_site(self):
-        """Testing GitHub close_submitted hook with invalid Local Site"""
-        repository = self.create_repository()
+        """Testing GitHub close_submitted hook with event=push and invalid
+        Local Site
+        """
+        account = self.create_hosting_account()
+        repository = self.create_repository(hosting_account=account)
 
         review_request = self.create_review_request(repository=repository,
                                                     publish=True)
@@ -1036,7 +1329,9 @@ class GitHubTests(ServiceTests):
             })
 
         response = self._post_commit_hook_payload(
-            url, review_request, repository.get_or_create_hooks_uuid())
+            post_url=url,
+            review_request_url=review_request.get_absolute_url(),
+            secret=repository.get_or_create_hooks_uuid())
         self.assertEqual(response.status_code, 404)
 
         review_request = ReviewRequest.objects.get(pk=review_request.pk)
@@ -1044,14 +1339,15 @@ class GitHubTests(ServiceTests):
         self.assertEqual(review_request.status, review_request.PENDING_REVIEW)
         self.assertEqual(review_request.changedescs.count(), 0)
 
-    @add_fixtures(['test_users', 'test_scmtools'])
     def test_close_submitted_hook_with_invalid_service_id(self):
-        """Testing GitHub close_submitted hook with invalid hosting service ID
+        """Testing GitHub close_submitted hook with event=push and invalid
+        hosting service ID
         """
         # We'll test against Bitbucket for this test.
-        account = self._get_hosting_account()
+        account = self.create_hosting_account()
         account.service_name = 'bitbucket'
         account.save()
+
         repository = self.create_repository(hosting_account=account)
 
         review_request = self.create_review_request(repository=repository,
@@ -1067,7 +1363,9 @@ class GitHubTests(ServiceTests):
             })
 
         response = self._post_commit_hook_payload(
-            url, review_request, repository.get_or_create_hooks_uuid())
+            post_url=url,
+            review_request_url=review_request.get_absolute_url(),
+            secret=repository.get_or_create_hooks_uuid())
         self.assertEqual(response.status_code, 404)
 
         review_request = ReviewRequest.objects.get(pk=review_request.pk)
@@ -1075,12 +1373,9 @@ class GitHubTests(ServiceTests):
         self.assertEqual(review_request.status, review_request.PENDING_REVIEW)
         self.assertEqual(review_request.changedescs.count(), 0)
 
-    @add_fixtures(['test_users', 'test_scmtools'])
     def test_close_submitted_hook_with_invalid_event(self):
-        """Testing GitHub close_submitted hook with non-push event"""
-        account = self._get_hosting_account()
-        account.save()
-
+        """Testing GitHub close_submitted hook with invalid event"""
+        account = self.create_hosting_account()
         repository = self.create_repository(hosting_account=account)
         review_request = self.create_review_request(repository=repository,
                                                     publish=True)
@@ -1095,7 +1390,9 @@ class GitHubTests(ServiceTests):
             })
 
         response = self._post_commit_hook_payload(
-            url, review_request, repository.get_or_create_hooks_uuid(),
+            post_url=url,
+            review_request_url=review_request.get_absolute_url(),
+            secret=repository.get_or_create_hooks_uuid(),
             event='foo')
         self.assertEqual(response.status_code, 400)
 
@@ -1104,12 +1401,9 @@ class GitHubTests(ServiceTests):
         self.assertEqual(review_request.status, review_request.PENDING_REVIEW)
         self.assertEqual(review_request.changedescs.count(), 0)
 
-    @add_fixtures(['test_users', 'test_scmtools'])
     def test_close_submitted_hook_with_invalid_signature(self):
         """Testing GitHub close_submitted hook with invalid signature"""
-        account = self._get_hosting_account()
-        account.save()
-
+        account = self.create_hosting_account()
         repository = self.create_repository(hosting_account=account)
         review_request = self.create_review_request(repository=repository,
                                                     publish=True)
@@ -1124,7 +1418,9 @@ class GitHubTests(ServiceTests):
             })
 
         response = self._post_commit_hook_payload(
-            url, review_request, 'bad-secret')
+            post_url=url,
+            review_request_url=review_request.get_absolute_url,
+            secret='bad-secret')
         self.assertEqual(response.status_code, 400)
 
         review_request = ReviewRequest.objects.get(pk=review_request.pk)
@@ -1132,10 +1428,56 @@ class GitHubTests(ServiceTests):
         self.assertEqual(review_request.status, review_request.PENDING_REVIEW)
         self.assertEqual(review_request.changedescs.count(), 0)
 
-    def _test_post_commit_hook(self, local_site=None, publish=True):
-        account = self._get_hosting_account(local_site=local_site)
-        account.save()
+    def test_close_submitted_hook_with_invalid_review_requests(self):
+        """Testing GitHub close_submitted hook with event=push and invalid
+        review requests
+        """
+        self.spy_on(logging.error)
 
+        account = self.create_hosting_account()
+        repository = self.create_repository(hosting_account=account)
+
+        review_request = self.create_review_request(repository=repository,
+                                                    publish=True)
+        self.assertTrue(review_request.public)
+        self.assertEqual(review_request.status, review_request.PENDING_REVIEW)
+
+        url = local_site_reverse(
+            'github-hooks-close-submitted',
+            kwargs={
+                'repository_id': repository.pk,
+                'hosting_service_id': 'github',
+            })
+
+        response = self._post_commit_hook_payload(
+            post_url=url,
+            review_request_url='/r/9999/',
+            secret=repository.get_or_create_hooks_uuid())
+        self.assertEqual(response.status_code, 200)
+
+        review_request = ReviewRequest.objects.get(pk=review_request.pk)
+        self.assertTrue(review_request.public)
+        self.assertEqual(review_request.status, review_request.PENDING_REVIEW)
+        self.assertEqual(review_request.changedescs.count(), 0)
+
+        self.assertTrue(logging.error.called_with(
+            'close_all_review_requests: Review request #%s does not exist.',
+            9999))
+
+    def _test_post_commit_hook(self, local_site=None, publish=True):
+        """Testing posting to a commit hook.
+
+        This will simulate pushing a commit and posting the resulting webhook
+        payload from GitHub to the handler for the hook.
+
+        Args:
+            local_site (reviewboard.site.models.LocalSite, optional):
+                The Local Site owning the review request.
+
+            publish (bool, optional):
+                Whether to test with a published review request.
+        """
+        account = self.create_hosting_account(local_site=local_site)
         repository = self.create_repository(hosting_account=account,
                                             local_site=local_site)
 
@@ -1153,7 +1495,9 @@ class GitHubTests(ServiceTests):
             })
 
         response = self._post_commit_hook_payload(
-            url, review_request, repository.get_or_create_hooks_uuid())
+            post_url=url,
+            review_request_url=review_request.get_absolute_url(),
+            secret=repository.get_or_create_hooks_uuid())
         self.assertEqual(response.status_code, 200)
 
         review_request = ReviewRequest.objects.get(pk=review_request.pk)
@@ -1164,9 +1508,29 @@ class GitHubTests(ServiceTests):
         changedesc = review_request.changedescs.get()
         self.assertEqual(changedesc.text, 'Pushed to master (1c44b46)')
 
-    def _post_commit_hook_payload(self, url, review_request, secret,
+    def _post_commit_hook_payload(self, post_url, review_request_url, secret,
                                   event='push'):
-        payload = json.dumps({
+        """Post a payload for a hook for testing.
+
+        Args:
+            post_url (unicode):
+                The URL to post to.
+
+            review_request_url (unicode):
+                The URL of the review request being represented in the
+                payload.
+
+            secret (unicode):
+                The HMAC secret for the message.
+
+            event (unicode, optional):
+                The webhook event.
+
+        Results:
+            django.core.handlers.request.wsgi.WSGIRequest:
+            The post request.
+        """
+        payload = self.dump_json({
             # NOTE: This payload only contains the content we make
             #       use of in the hook.
             'ref': 'refs/heads/master',
@@ -1176,7 +1540,7 @@ class GitHubTests(ServiceTests):
                     'message': 'This is my fancy commit\n'
                                '\n'
                                'Reviewed at http://example.com%s'
-                               % review_request.get_absolute_url(),
+                               % review_request_url
                 },
             ]
         })
@@ -1184,63 +1548,8 @@ class GitHubTests(ServiceTests):
         m = hmac.new(bytes(secret), payload, hashlib.sha1)
 
         return self.client.post(
-            url,
+            post_url,
             payload,
             content_type='application/json',
             HTTP_X_GITHUB_EVENT=event,
             HTTP_X_HUB_SIGNATURE='sha1=%s' % m.hexdigest())
-
-    def _test_check_repository(self, expected_user='myuser', **kwargs):
-        def _http_get(service, url, *args, **kwargs):
-            self.assertEqual(
-                url,
-                'https://api.github.com/repos/%s/myrepo?access_token=123'
-                % expected_user)
-            return b'{}', {}
-
-        account = self._get_hosting_account()
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
-        account.data['authorization'] = {
-            'token': '123',
-        }
-
-        service.check_repository(**kwargs)
-        self.assertTrue(service.client.http_get.called)
-
-    def _test_check_repository_error(self, http_status, payload,
-                                     expected_error, **kwargs):
-        def _http_get(service, url, *args, **kwargs):
-            if http_status == 200:
-                return payload, {}
-            else:
-                raise HTTPError(url, http_status, '', {}, StringIO(payload))
-
-        account = self._get_hosting_account()
-        service = account.service
-        self.spy_on(service.client.http_get, call_fake=_http_get)
-        account.data['authorization'] = {
-            'token': '123',
-        }
-
-        try:
-            service.check_repository(**kwargs)
-            saw_exception = False
-        except Exception as e:
-            self.assertEqual(six.text_type(e), expected_error)
-            saw_exception = True
-
-        self.assertTrue(saw_exception)
-
-    def _get_repo_api_url(self, plan, fields):
-        account = self._get_hosting_account()
-        service = account.service
-        self.assertNotEqual(service, None)
-
-        repository = Repository(hosting_account=account)
-        repository.extra_data['repository_plan'] = plan
-
-        form = self._get_form(plan, fields)
-        form.save(repository)
-
-        return service._get_repo_api_url(repository)

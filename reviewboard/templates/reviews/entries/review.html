@@ -1,0 +1,43 @@
+{% extends "reviews/entries/base.html" %}
+{% load accounts djblets_utils i18n %}
+
+
+{% block entry_classes %}review has-avatar{% endblock %}
+{% block entry_status_classes %}{% if entry.review.ship_it %} ship-it{% endif %}{% if entry.issue_open_count > 0 %} has-issues{% endif %}{% endblock %}
+
+
+{% block entry_extra_anchors %}
+{%  if forloop.last %}
+ <a name="last-review"></a>
+{%  endif %}
+{% endblock entry_extra_anchors %}
+
+
+{% block entry_labels %}
+{%  if entry.review.ship_it %}
+<label class="ship-it-label">
+ {% trans "Ship it!" %}
+{%   if entry.can_revoke_ship_it %}
+ <span class="revoke-ship-it fa fa-close" title="{% trans 'Revoke the Ship It' %}"></span>
+{%   endif %}
+</label>
+{%  endif %}
+{%  if entry.has_issues %}
+<label class="fix-it-label"{% if entry.issue_open_count == 0 %} style="display: none;"{% endif %}>{% trans "Fix it!" %}</label>
+{%  endif %}
+{% endblock entry_labels %}
+
+
+{% block entry_title %}
+<a href="{% url 'user' entry.review.user %}" class="user">{% user_profile_display_name entry.review.user %}</a>
+{% endblock entry_title %}
+
+
+{% block entry_new_label %}{% trans "New review" %}{% endblock %}
+
+
+{% block entry_content %}
+<ol class="review-comments">
+{%  include "reviews/entries/_review_body.html" with review=entry.review diff_comments=entry.comments.diff_comments file_attachment_comments=entry.comments.file_attachment_comments general_comments=entry.comments.general_comments screenshot_comments=entry.comments.screenshot_comments always_show_body_top=True %}
+</ol>
+{% endblock entry_content %}

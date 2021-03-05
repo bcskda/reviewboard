@@ -14,7 +14,7 @@ from reviewboard.webapi.tests.urls import (get_hosting_service_item_url,
 
 
 def _compare_item(self, item_rsp, hosting_service):
-    self.assertEqual(item_rsp['id'], hosting_service.id)
+    self.assertEqual(item_rsp['id'], hosting_service.hosting_service_id)
     self.assertEqual(item_rsp['name'], hosting_service.name)
     self.assertEqual(item_rsp['needs_authorization'],
                      hosting_service.needs_authorization)
@@ -24,6 +24,31 @@ def _compare_item(self, item_rsp, hosting_service):
                      hosting_service.supports_repositories)
     self.assertEqual(item_rsp['supports_two_factor_auth'],
                      hosting_service.supports_two_factor_auth)
+    self.assertEqual(item_rsp['supported_scmtools'],
+                     hosting_service.supported_scmtools)
+
+    plans_rsp = item_rsp['plans']
+    plan_keys = set(six.iterkeys(plans_rsp))
+
+    if plan_keys == {''}:
+        self.assertIsNone(hosting_service.plans)
+
+        plan_rsp = plans_rsp['']
+        self.assertEqual(plan_rsp['name'], 'Default')
+        self.assertEqual(set(plan_rsp['fields']),
+                         set(hosting_service.form.base_fields))
+    else:
+        plans = hosting_service.plans
+        self.assertEqual(len(plans), len(plan_keys))
+
+        for plan_id, plan in plans:
+            self.assertIn(plan_id, plans_rsp)
+
+            plan_rsp = plans_rsp[plan_id]
+            self.assertEqual(plan_rsp['name'], plan['name'])
+            self.assertEqual(set(plan_rsp['fields']),
+                             set(plan['form'].base_fields))
+
     self.assertEqual(item_rsp['supported_scmtools'],
                      hosting_service.supported_scmtools)
 
@@ -37,12 +62,12 @@ def _compare_item(self, item_rsp, hosting_service):
 
     # Check the links.
     accounts_url = url_base + ('hosting-service-accounts/?service=%s'
-                               % hosting_service.id)
+                               % hosting_service.hosting_service_id)
     self.assertIn('accounts', item_rsp['links'])
     self.assertEqual(item_rsp['links']['accounts']['href'], accounts_url)
 
     accounts_url = url_base + ('repositories/?hosting-service=%s'
-                               % hosting_service.id)
+                               % hosting_service.hosting_service_id)
     self.assertIn('repositories', item_rsp['links'])
     self.assertEqual(item_rsp['links']['repositories']['href'], accounts_url)
 

@@ -1,6 +1,7 @@
 from __future__ import unicode_literals
 
 import logging
+import warnings
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
@@ -10,12 +11,15 @@ from django.db.models import Count, Q
 from django.utils import six, timezone
 from django.utils.translation import ugettext_lazy as _
 from djblets.cache.backend import make_cache_key
-from djblets.db.fields import CounterField, ModificationTimestampField
+from djblets.db.fields import (CounterField, ModificationTimestampField,
+                               RelationCounterField)
 from djblets.db.query import get_object_or_none
+from djblets.deprecation import deprecated_arg_value
 
 from reviewboard.attachments.models import (FileAttachment,
                                             FileAttachmentHistory)
 from reviewboard.changedescs.models import ChangeDescription
+from reviewboard.deprecation import RemovedInReviewBoard40Warning
 from reviewboard.diffviewer.models import DiffSet, DiffSetHistory
 from reviewboard.reviews.errors import (PermissionError,
                                         PublishError)
@@ -46,7 +50,9 @@ def fetch_issue_counts(review_request, extra_query=None):
     issue_counts = {
         BaseComment.OPEN: 0,
         BaseComment.RESOLVED: 0,
-        BaseComment.DROPPED: 0
+        BaseComment.DROPPED: 0,
+        BaseComment.VERIFYING_RESOLVED: 0,
+        BaseComment.VERIFYING_DROPPED: 0,
     }
 
     q = Q(public=True) & Q(base_reply_to__isnull=True)
@@ -61,6 +67,9 @@ def fetch_issue_counts(review_request, extra_query=None):
         'file_attachment_comments__pk',
         'file_attachment_comments__issue_opened',
         'file_attachment_comments__issue_status',
+        'general_comments__pk',
+        'general_comments__issue_opened',
+        'general_comments__issue_status',
         'screenshot_comments__pk',
         'screenshot_comments__issue_opened',
         'screenshot_comments__issue_status')
@@ -69,6 +78,7 @@ def fetch_issue_counts(review_request, extra_query=None):
         comment_fields = {
             'comments': set(),
             'file_attachment_comments': set(),
+            'general_comments': set(),
             'screenshot_comments': set(),
         }
 
@@ -112,11 +122,15 @@ def _initialize_issue_counts(review_request):
     review_request.issue_open_count = issue_counts[BaseComment.OPEN]
     review_request.issue_resolved_count = issue_counts[BaseComment.RESOLVED]
     review_request.issue_dropped_count = issue_counts[BaseComment.DROPPED]
+    review_request.issue_verifying_count = (
+        issue_counts[BaseComment.VERIFYING_RESOLVED] +
+        issue_counts[BaseComment.VERIFYING_DROPPED])
 
     review_request.save(update_fields=[
         'issue_open_count',
         'issue_resolved_count',
-        'issue_dropped_count'
+        'issue_dropped_count',
+        'issue_verifying_count',
     ])
 
     # Tell CounterField not to set or save any values.
@@ -147,6 +161,8 @@ class ReviewRequest(BaseReviewRequestDetails):
         BaseComment.OPEN: 'issue_open_count',
         BaseComment.RESOLVED: 'issue_resolved_count',
         BaseComment.DROPPED: 'issue_dropped_count',
+        BaseComment.VERIFYING_RESOLVED: 'issue_verifying_count',
+        BaseComment.VERIFYING_DROPPED: 'issue_verifying_count',
     }
 
     summary = models.CharField(
@@ -252,12 +268,81 @@ class ReviewRequest(BaseReviewRequestDetails):
         _('dropped issue count'),
         initializer=_initialize_issue_counts)
 
+
+    issue_verifying_count = CounterField(
+        _('verifying issue count'),
+        initializer=_initialize_issue_counts)
+
+    screenshots_count = RelationCounterField(
+        'screenshots',
+        verbose_name=_('screenshots count'))
+
+    inactive_screenshots_count = RelationCounterField(
+        'inactive_screenshots',
+        verbose_name=_('inactive screenshots count'))
+
+    file_attachments_count = RelationCounterField(
+        'file_attachments',
+        verbose_name=_('file attachments count'))
+
+    inactive_file_attachments_count = RelationCounterField(
+        'inactive_file_attachments',
+        verbose_name=_('inactive file attachments count'))
+
     local_site = models.ForeignKey(LocalSite, blank=True, null=True,
                                    related_name='review_requests')
     local_id = models.IntegerField('site-local ID', blank=True, null=True)
 
     # Set this up with the ReviewRequestManager
     objects = ReviewRequestManager()
+
+    @staticmethod
+    def status_to_string(status):
+        """Return a string representation of a review request status.
+
+        Args:
+            status (unicode):
+                A single-character string representing the status.
+
+        Returns:
+            unicode:
+            A longer string representation of the status suitable for use in
+            the API.
+        """
+        if status == ReviewRequest.PENDING_REVIEW:
+            return 'pending'
+        elif status == ReviewRequest.SUBMITTED:
+            return 'submitted'
+        elif status == ReviewRequest.DISCARDED:
+            return 'discarded'
+        elif status is None:
+            return 'all'
+        else:
+            raise ValueError('Invalid status "%s"' % status)
+
+    @staticmethod
+    def string_to_status(status):
+        """Return a review request status from an API string.
+
+        Args:
+            status (unicode):
+                A string from the API representing the status.
+
+        Returns:
+            unicode:
+            A single-character string representing the status, suitable for
+            storage in the ``status`` field.
+        """
+        if status == 'pending':
+            return ReviewRequest.PENDING_REVIEW
+        elif status == 'submitted':
+            return ReviewRequest.SUBMITTED
+        elif status == 'discarded':
+            return ReviewRequest.DISCARDED
+        elif status == 'all':
+            return None
+        else:
+            raise ValueError('Invalid status string "%s"' % status)
 
     def get_commit(self):
         if self.commit_id is not None:
@@ -316,12 +401,78 @@ class ReviewRequest(BaseReviewRequestDetails):
 
         return self._approval_failure
 
+    @property
+    def owner(self):
+        """The owner of a review request.
+
+        This is an alias for :py:attr:`submitter`. It provides compatibilty
+        with :py:attr:`ReviewRequestDraft.owner
+        <reviewboard.reviews.models.review_request_draft.ReviewRequestDraft.owner>`,
+        for functions working with either method, and for review request
+        fields, but it cannot be used for queries.
+        """
+        return self.submitter
+
+    @owner.setter
+    def owner(self, new_owner):
+        self.submitter = new_owner
+
+    @property
+    def review_participants(self):
+        """Return the participants in reviews on the review request.
+
+        This will contain the users who published any reviews or replies on the
+        review request. The list will be in username sort order and will not
+        contain duplicates.
+
+        This will only contain the owner of the review request if they've filed
+        a review or reply.
+
+        Returns:
+            set of django.contrib.auth.models.User:
+            The users who filed reviews or replies.
+        """
+        user_ids = list(
+            self.reviews
+            .filter(public=True)
+            .values_list('user_id', flat=True)
+        )
+        users = set()
+
+        if user_ids:
+            users.update(User.objects.filter(pk__in=user_ids))
+
+        return users
+
     def get_participants(self):
-        """Returns a list of users who have discussed this review request."""
-        # See the comment in Review.get_participants for this list
-        # comprehension.
-        return [u for review in self.reviews.all()
-                for u in review.participants]
+        """Return a list of participants in a review's discussion.
+
+        This will contain the author of the review and every user who has
+        replied to the review, in order of the creation (but not publishing)
+        of the reply. Users with unpublished replies are included in the list.
+
+        Deprecated:
+            3.0.12:
+            This has been replaced with the more efficient
+            :py:attr:`review_participants`.
+
+        Returns:
+            list of django.contrib.auth.models.User:
+            The users who filed reviews or replies.
+        """
+        warnings.warn('ReviewRequest.participants/get_participants() is '
+                      'deprecated and will be removed in 4.0. Use '
+                      'ReviewRequest.review_participants instead.',
+                      RemovedInReviewBoard40Warning)
+
+        return [
+            review.user
+            for review in (
+                self.reviews
+                .only('pk', 'review_request', 'user')
+                .select_related('user')
+            )
+        ]
 
     participants = property(get_participants)
 
@@ -416,7 +567,7 @@ class ReviewRequest(BaseReviewRequestDetails):
             return False
 
         if (user.is_authenticated() and
-            self.target_people.filter(pk=user.pk).count() > 0):
+            self.target_people.filter(pk=user.pk).exists()):
             return True
 
         groups = list(self.target_groups.all())
@@ -488,6 +639,74 @@ class ReviewRequest(BaseReviewRequestDetails):
         This will return the last object updated, along with the timestamp
         of that object. It can be used to judge whether something on a
         review request has been made public more recently.
+
+        Deprecated:
+            3.0:
+            See :py:meth:`get_last_activity_info` instead.
+
+        Args:
+            diffsets (list of reviewboard.diffviewer.models.DiffSet, optional):
+                The list of diffsets to compare for latest activity.
+
+                If not provided, this will be populated with the last diffset.
+
+            reviews (list of reviewboard.reviews.models.Review, optional):
+                The list of reviews to compare for latest activity.
+
+                If not provided, this will be populated with the latest review.
+
+        Returns:
+            tuple:
+
+            * The timestamp the review request was last updated
+              (:py:class:`~datetime.datetime`).
+            * The object that was updated
+              (:py:class:`~reviewboard.reviews.models.Review`,
+              :py:class:`~reviewboard.reviews.models.ReviewRequest`, or
+              :py:class:`~reviewboard.diffviewer.models.DiffSet`).
+        """
+        warnings.warn(
+            'ReviewRequest.get_last_activity is deprecated in Review Board '
+            '3.0 and will be removed in a future release. Please use '
+            'ReviewRequest.get_last_activity_info instead.',
+            RemovedInReviewBoard40Warning)
+
+        info = self.get_last_activity_info(diffsets=diffsets, reviews=reviews)
+        return info['timestamp'], info['updated_object']
+
+    def get_last_activity_info(self, diffsets=None, reviews=None):
+        """Return the last public activity information on the review request.
+
+        Args:
+            diffsets (list of reviewboard.diffviewer.models.DiffSet, optional):
+                The list of diffsets to compare for latest activity.
+
+                If not provided, this will be populated with the last diffset.
+
+            reviews (list of reviewboard.reviews.models.Review, optional):
+                The list of reviews to compare for latest activity.
+
+                If not provided, this will be populated with the latest review.
+
+        Returns:
+            dict:
+            A dictionary with the following keys:
+
+            ``timestamp``:
+                The :py:class:`~datetime.datetime` that the object was updated.
+
+            ``updated_object``:
+                The object that was updated. This will be one of the following:
+
+                * The :py:class:`~reviewboard.reviews.models.ReviewRequest`
+                  itself.
+                * A :py:class:`~reviewboard.reviews.models.Review`.
+                * A :py:class:`~reviewboard.diffviewer.models.DiffSet`.
+
+            ``changedesc``:
+                The latest
+                :py:class:`~reviewboard.changedescs.models.ChangeDescription`,
+                if any.
         """
         timestamp = self.last_updated
         updated_object = self
@@ -518,7 +737,19 @@ class ReviewRequest(BaseReviewRequestDetails):
                 timestamp = review.timestamp
                 updated_object = review
 
-        return timestamp, updated_object
+        changedesc = None
+
+        if updated_object is self or isinstance(updated_object, DiffSet):
+            try:
+                changedesc = self.changedescs.latest()
+            except ChangeDescription.DoesNotExist:
+                pass
+
+        return {
+            'changedesc': changedesc,
+            'timestamp': timestamp,
+            'updated_object': updated_object,
+        }
 
     def changeset_is_pending(self, commit_id):
         """Returns whether the associated changeset is pending commit.
@@ -590,9 +821,9 @@ class ReviewRequest(BaseReviewRequestDetails):
         if not hasattr(self, '_diffsets'):
             self._diffsets = list(
                 DiffSet.objects
-                    .filter(history__pk=self.diffset_history_id)
-                    .annotate(file_count=Count('files'))
-                    .prefetch_related('files'))
+                .filter(history__pk=self.diffset_history_id)
+                .annotate(file_count=Count('files'))
+                .prefetch_related('files'))
 
         return self._diffsets
 
@@ -604,11 +835,24 @@ class ReviewRequest(BaseReviewRequestDetails):
         except DiffSet.DoesNotExist:
             return None
 
-    def get_close_description(self):
-        """Returns a tuple (description, is_rich_text) for the close text.
+    def get_close_info(self):
+        """Return metadata of the most recent closing of a review request.
 
         This is a helper which is used to gather the data which is rendered in
         the close description boxes on various pages.
+
+        Returns:
+            dict:
+            A dictionary with the following keys:
+
+            ``'close_description'`` (:py:class:`unicode`):
+                Description of review request upon closing.
+
+            ``'is_rich_text'`` (:py:class:`bool`):
+                Boolean whether description is rich text.
+
+            ``'timestamp'`` (:py:class:`datetime.datetime`):
+                Time of review requests last closing.
         """
         # We're fetching all entries instead of just public ones because
         # another query may have already prefetched the list of
@@ -620,6 +864,7 @@ class ReviewRequest(BaseReviewRequestDetails):
         # wouldn't be saving much of anything with a filter.
         changedescs = list(self.changedescs.all())
         latest_changedesc = None
+        timestamp = None
 
         for changedesc in changedescs:
             if changedesc.public:
@@ -635,8 +880,37 @@ class ReviewRequest(BaseReviewRequestDetails):
             if status in (ReviewRequest.DISCARDED, ReviewRequest.SUBMITTED):
                 close_description = latest_changedesc.text
                 is_rich_text = latest_changedesc.rich_text
+                timestamp = latest_changedesc.timestamp
 
-        return (close_description, is_rich_text)
+        return {
+            'close_description': close_description,
+            'is_rich_text': is_rich_text,
+            'timestamp': timestamp
+        }
+
+    def get_close_description(self):
+        """Return metadata of the most recent closing of a review request.
+
+        This is a helper which is used to gather the data which is rendered in
+        the close description boxes on various pages.
+
+        .. deprecated:: 3.0
+           Use :py:meth:`get_close_info` instead
+
+        Returns:
+            tuple:
+            A 2-tuple of:
+
+            * The close description (:py:class:`unicode`)
+            * Whether or not the close description is rich text
+              (:py:class:`bool`)
+        """
+        warnings.warn('ReviewRequest.get_close_description() is deprecated. '
+                      'Use ReviewRequest.get_close_info().',
+                      RemovedInReviewBoard40Warning)
+
+        close_info = self.get_close_info()
+        return (close_info['close_description'], close_info['is_rich_text'])
 
     def get_blocks(self):
         """Returns the list of review request this one blocks.
@@ -648,9 +922,9 @@ class ReviewRequest(BaseReviewRequestDetails):
 
         return self._blocks
 
-    def save(self, update_counts=False, **kwargs):
+    def save(self, update_counts=False, old_submitter=None, **kwargs):
         if update_counts or self.id is None:
-            self._update_counts()
+            self._update_counts(old_submitter)
 
         if self.status != self.PENDING_REVIEW:
             # If this is not a pending review request now, delete any
@@ -660,20 +934,7 @@ class ReviewRequest(BaseReviewRequestDetails):
         super(ReviewRequest, self).save(**kwargs)
 
     def delete(self, **kwargs):
-        from reviewboard.accounts.models import Profile, LocalSiteProfile
-
-        profile, profile_is_new = \
-            Profile.objects.get_or_create(user=self.submitter)
-
-        if profile_is_new:
-            profile.save()
-
-        local_site = self.local_site
-        site_profile, site_profile_is_new = \
-            LocalSiteProfile.objects.get_or_create(user=self.submitter,
-                                                   profile=profile,
-                                                   local_site=local_site)
-
+        site_profile = self.submitter.get_site_profile(self.local_site)
         site_profile.decrement_total_outgoing_request_count()
 
         if self.status == self.PENDING_REVIEW:
@@ -687,58 +948,122 @@ class ReviewRequest(BaseReviewRequestDetails):
     def can_publish(self):
         return not self.public or get_object_or_none(self.draft) is not None
 
-    def close(self, type, user=None, description=None, rich_text=False):
+    def close(self, close_type=None, user=None, description=None,
+              rich_text=False, **kwargs):
         """Closes the review request.
 
-        The type must be one of SUBMITTED or DISCARDED.
+        Args:
+            close_type (unicode):
+                How the close occurs. This should be one of
+                :py:attr:`SUBMITTED` or :py:attr:`DISCARDED`.
+
+            user (django.contrib.auth.models.User):
+                The user who is closing the review request.
+
+            description (unicode):
+                An optional description that indicates why the review request
+                was closed.
+
+            rich_text (bool):
+                Indicates whether or not that the description is rich text.
+
+        Raises:
+            ValueError:
+                The provided close type is not a valid value.
+
+            PermissionError:
+                The user does not have permission to close the review request.
+
+            TypeError:
+                Keyword arguments were supplied to the function.
+
+        .. versionchanged:: 3.0
+           The ``type`` argument is deprecated: ``close_type`` should be used
+           instead.
+
+           This method raises :py:exc:`ValueError` instead of
+           :py:exc:`AttributeError` when the ``close_type`` has an incorrect
+           value.
         """
+        if close_type is None:
+            try:
+                close_type = kwargs.pop('type')
+            except KeyError:
+                raise AttributeError('close_type must be provided')
+
+            warnings.warn(
+                'The "type" argument was deprecated in Review Board 3.0 and '
+                'will be removed in a future version. Use "close_type" '
+                'instead.'
+            )
+
+        if kwargs:
+            raise TypeError('close() does not accept keyword arguments.')
+
         if (user and not self.is_mutable_by(user) and
             not user.has_perm("reviews.can_change_status", self.local_site)):
             raise PermissionError
 
-        if type not in [self.SUBMITTED, self.DISCARDED]:
-            raise AttributeError("%s is not a valid close type" % type)
+        if close_type not in [self.SUBMITTED, self.DISCARDED]:
+            raise ValueError("%s is not a valid close type" % type)
 
-        review_request_closing.send(sender=self.__class__,
-                                    user=user,
-                                    review_request=self,
-                                    type=type,
-                                    description=description,
-                                    rich_text=rich_text)
+        review_request_closing.send(
+            sender=type(self),
+            user=user,
+            review_request=self,
+            close_type=close_type,
+            type=deprecated_arg_value(
+                owner_name='review_request_closing',
+                old_arg_name='type',
+                new_arg_name='close_type',
+                value=close_type,
+                warning_cls=RemovedInReviewBoard40Warning),
+            description=description,
+            rich_text=rich_text)
 
         draft = get_object_or_none(self.draft)
 
-        if self.status != type:
+        if self.status != close_type:
             if (draft is not None and
-                not self.public and type == self.DISCARDED):
+                not self.public and close_type == self.DISCARDED):
                 # Copy over the draft information if this is a private discard.
                 draft.copy_fields_to_request(self)
 
             # TODO: Use the user's default for rich_text.
             changedesc = ChangeDescription(public=True,
                                            text=description or "",
-                                           rich_text=rich_text or False)
+                                           rich_text=rich_text or False,
+                                           user=user or self.submitter)
 
             status_field = get_review_request_field('status')(self)
-            status_field.record_change_entry(changedesc, self.status, type)
+            status_field.record_change_entry(changedesc, self.status,
+                                             close_type)
             changedesc.save()
 
             self.changedescs.add(changedesc)
 
-            if type == self.SUBMITTED:
+            if close_type == self.SUBMITTED:
                 if not self.public:
                     raise PublishError("The draft must be public first.")
             else:
                 self.commit_id = None
 
-            self.status = type
+            self.status = close_type
             self.save(update_counts=True)
 
-            review_request_closed.send(sender=self.__class__, user=user,
-                                       review_request=self,
-                                       type=type,
-                                       description=description,
-                                       rich_text=rich_text)
+            review_request_closed.send(
+                sender=type(self),
+                user=user,
+                review_request=self,
+                close_type=close_type,
+                type=deprecated_arg_value(
+                    owner_name='review_request_closed',
+                    old_arg_name='type',
+                    new_arg_name='close_type',
+                    value=close_type,
+                    warning_cls=RemovedInReviewBoard40Warning),
+                description=description,
+                rich_text=rich_text)
         else:
             # Update submission description.
             changedesc = self.changedescs.filter(public=True).latest()
@@ -763,7 +1088,10 @@ class ReviewRequest(BaseReviewRequestDetails):
             not user.has_perm("reviews.can_change_status", self.local_site)):
             raise PermissionError
 
-        if self.status != self.PENDING_REVIEW:
+        old_status = self.status
+        old_public = self.public
+
+        if old_status != self.PENDING_REVIEW:
             # The reopening signal is only fired when actually making a status
             # change since the main consumers (extensions) probably only care
             # about changes.
@@ -771,18 +1099,16 @@ class ReviewRequest(BaseReviewRequestDetails):
                                           user=user,
                                           review_request=self)
 
-            changedesc = ChangeDescription()
+            changedesc = ChangeDescription(user=user or self.submitter)
             status_field = get_review_request_field('status')(self)
-            status_field.record_change_entry(changedesc, self.status,
+            status_field.record_change_entry(changedesc, old_status,
                                              self.PENDING_REVIEW)
 
-            if self.status == self.DISCARDED:
+            if old_status == self.DISCARDED:
                 # A draft is needed if reopening a discarded review request.
                 self.public = False
                 changedesc.save()
-                draft = ReviewRequestDraft.create(self)
-                draft.changedesc = changedesc
-                draft.save()
+                ReviewRequestDraft.create(self, changedesc=changedesc)
             else:
                 changedesc.public = True
                 changedesc.save()
@@ -792,9 +1118,11 @@ class ReviewRequest(BaseReviewRequestDetails):
             self.save(update_counts=True)
 
         review_request_reopened.send(sender=self.__class__, user=user,
-                                     review_request=self)
+                                     review_request=self,
+                                     old_status=old_status,
+                                     old_public=old_public)
 
-    def publish(self, user, trivial=False):
+    def publish(self, user, trivial=False, validate_fields=True):
         """Publishes the current draft attached to this review request.
 
         The review request will be mark as public, and signals will be
@@ -804,24 +1132,73 @@ class ReviewRequest(BaseReviewRequestDetails):
             raise PermissionError
 
         draft = get_object_or_none(self.draft)
+        old_submitter = self.submitter
+
+        if (draft is not None and
+            draft.owner is not None and
+            old_submitter != draft.owner):
+            # The owner will be changing, and there was an edge case (present
+            # through Review Board 3.0.14) where, if the new owner didn't
+            # have a LocalSiteProfile, we'd end up with bad incoming counts.
+            #
+            # The reason is that the creation of a new LocalSiteProfile in
+            # that function resulted in counters that were populated by a
+            # post-publish state, but before counters were incremented or
+            # decremented. This caused a redundant increment/decrement at
+            # times.
+            #
+            # We attempted in _update_counts() to deal with this for the
+            # outgoing counts, carefully checking if it's a new profile,
+            # but couldn't easily work around the varied states for incoming
+            # counts. The simplest solution is to ensure a populated profile
+            # before we begin messing with any counts (below) and before
+            # publishing new state.
+            #
+            # Note that we only need to fetch the profile for what will be
+            # the current owner after the publish has completed. That's why
+            # we're fetching the draft owner here, or the old submitter in
+            # the `else:` below, but not both.
+            draft.owner.get_site_profile(self.local_site)
+        else:
+            # For good measure, we're going to also query this for the original
+            # owner, if the owner has not changed. This prevents the same
+            # sorts of problems from occurring in the event that a review
+            # request has been created and published for a new user through
+            # some means like the API or a script without that user having
+            # a profile.
+            old_submitter.get_site_profile(self.local_site)
 
         review_request_publishing.send(sender=self.__class__, user=user,
                                        review_request_draft=draft)
 
-        # Decrement the counts on everything. we lose them.
-        # We'll increment the resulting set during ReviewRequest.save.
-        # This should be done before the draft is published.
-        # Once the draft is published, the target people
-        # and groups will be updated with new values.
-        # Decrement should not happen while publishing
-        # a new request or a discarded request
+        # Decrement the counts on everything. We'll increment the resulting
+        # set during _update_counts() (called from ReviewRequest.save()).
+        # This must be done before the draft is published, or we'll end up
+        # with bad counts.
+        #
+        # Once the draft is published, the target people and groups will be
+        # updated with new values.
         if self.public:
             self._decrement_reviewer_counts()
+
+        # Calculate the timestamp once and use it for all things that are
+        # considered as happening now. If we do not do this, there will be
+        # millisecond timestamp differences between review requests and their
+        # changedescs, diffsets, and reviews.
+        #
+        # Keeping them in sync means that get_last_activity() can work as
+        # intended. Otherwise, the review request will always have the most
+        # recent timestamp since it gets saved last.
+        timestamp = timezone.now()
 
         if draft is not None:
             # This will in turn save the review request, so we'll be done.
             try:
-                changes = draft.publish(self, send_notification=False)
+                changes = draft.publish(self,
+                                        send_notification=False,
+                                        user=user,
+                                        validate_fields=validate_fields,
+                                        timestamp=timestamp)
             except Exception:
                 # The draft failed to publish, for one reason or another.
                 # Check if we need to re-increment those counters we
@@ -835,68 +1212,162 @@ class ReviewRequest(BaseReviewRequestDetails):
         else:
             changes = None
 
-        if not self.public and self.changedescs.count() == 0:
+        if not self.public and not self.changedescs.exists():
             # This is a brand new review request that we're publishing
             # for the first time. Set the creation timestamp to now.
-            self.time_added = timezone.now()
+            self.time_added = timestamp
 
         self.public = True
-        self.save(update_counts=True)
+        self.last_updated = timestamp
+        self.save(update_counts=True, old_submitter=old_submitter)
 
         review_request_published.send(sender=self.__class__, user=user,
                                       review_request=self, trivial=trivial,
                                       changedesc=changes)
 
-    def _update_counts(self):
-        from reviewboard.accounts.models import Profile, LocalSiteProfile
+    def determine_user_for_changedesc(self, changedesc):
+        """Determine the user associated with the change description.
 
-        profile, profile_is_new = \
-            Profile.objects.get_or_create(user=self.submitter)
+        Args:
+            changedesc (reviewboard.changedescs.models.ChangeDescription):
+                The change description.
 
-        if profile_is_new:
-            profile.save()
+        Returns:
+            django.contrib.auth.models.User:
+            The user associated with the change description.
+        """
+        if 'submitter' in changedesc.fields_changed:
+            entry = changedesc.fields_changed['submitter']['old'][0]
+            return User.objects.get(pk=entry[2])
+
+        user_pk = None
+
+        changes = (
+            self.changedescs
+            .filter(pk__lt=changedesc.pk)
+            .order_by('-pk')
+        )
+
+        for changedesc in changes:
+            if 'submitter' in changedesc.fields_changed:
+                user_pk = changedesc.fields_changed['submitter']['new'][0][2]
+                break
+
+        if user_pk:
+            return User.objects.get(pk=user_pk)
+
+        return self.submitter
+
+    def _update_counts(self, old_submitter):
+        """Update the review request counters for affected users and groups.
+
+        This will increment/decrement the outgoing counters on the
+        :py:class:`~reviewboard.accounts.models.LocalSiteProfile` belonging
+        to the review request owner, and the incoming counters on both
+        review groups and profiles for users directly or indirectly assigned
+        as reviewers.
+
+        This is also careful to manage the outgoing counts for both old and
+        new owners of a review request, if ownership has changed.
+
+        Args:
+            old_submitter (django.contrib.auth.models.User):
+                The old submitter of a review request. This is impacted by
+                the call to :py:meth:`save`, and is only expected to be set
+                if saving during a :py:meth:`publish` operation. It will be
+                ``None`` in other cases.
+        """
+        from reviewboard.accounts.models import LocalSiteProfile
+
+        submitter_changed = (old_submitter is not None and
+                             old_submitter != self.submitter)
 
         local_site = self.local_site
-        site_profile, site_profile_is_new = \
-            LocalSiteProfile.objects.get_or_create(
-                user=self.submitter,
-                profile=profile,
-                local_site=local_site)
+        site_profile = self.submitter.get_site_profile(local_site)
 
-        if site_profile_is_new:
-            site_profile.save()
-
-        if self.id is None:
-            # This hasn't been created yet. Bump up the outgoing request
-            # count for the user.
+        if self.pk is None:
+            # This is brand-new review request that hasn't yet been saved.
+            # We won't have an existing review request to look up for the old
+            # values (so we'll hard-code them), and we know the owner hasn't
+            # changed. We can safely bump the outgoing review request count
+            # for the owner.
             site_profile.increment_total_outgoing_request_count()
             old_status = None
             old_public = False
         else:
-            # We need to see if the status has changed, so that means
-            # finding out what's in the database.
-            r = ReviewRequest.objects.get(pk=self.id)
+            # We're saving an existing review request. The status, public flag,
+            # and owner may have changed, so check the original values in the
+            # database and see.
+            r = ReviewRequest.objects.only('status', 'public').get(pk=self.id)
             old_status = r.status
             old_public = r.public
 
+            if submitter_changed:
+                # The owner of the review request changed, so we'll need to
+                # make sure to decrement the outgoing counts from the old
+                # owner and increment for the new owner.
+                #
+                # The pending count is conditional based on the state of the
+                # review request, but the total outgoing count is a permament
+                # change. The old user is no longer responsible for this
+                # review request and should never see it added to their count
+                # again.
+                site_profile.increment_total_outgoing_request_count()
+
+                if self.status == self.PENDING_REVIEW:
+                    site_profile.increment_pending_outgoing_request_count()
+
+                try:
+                    old_profile = old_submitter.get_site_profile(
+                        local_site,
+                        create_if_missing=False)
+                    old_profile.decrement_total_outgoing_request_count()
+
+                    if old_status == self.PENDING_REVIEW:
+                        old_profile.decrement_pending_outgoing_request_count()
+                except LocalSiteProfile.DoesNotExist:
+                    # The old user didn't have a profile (they may no longer
+                    # be on a Local Site, or the data may have been deleted).
+                    # We can ignore this, since we won't need to alter any
+                    # counters. If they ever get a profile, the initial values
+                    # will be computed correctly.
+                    pass
+
         if self.status == self.PENDING_REVIEW:
-            if old_status != self.status:
+            if old_status != self.status and not submitter_changed:
+                # The status of the review request has changed to Pending
+                # Review, and we know we didn't take care of the value as
+                # part of an ownership change. Increment the counter now.
                 site_profile.increment_pending_outgoing_request_count()
 
             if self.public and self.id is not None:
+                # This was either the first publish, or it's been reopened.
+                # It's now ready for review. Increment the counters for
+                # reviewers, so it shows up in their dashboards.
                 self._increment_reviewer_counts()
         elif old_status == self.PENDING_REVIEW:
-            if old_status != self.status:
+            if old_status != self.status and not submitter_changed:
+                # The status of the review request has changed from Pending
+                # Review (in other words, it's been closed), and we know we
+                # didn't take care of the value as part of an ownership
+                # change. Decrement the counter now.
                 site_profile.decrement_pending_outgoing_request_count()
 
             if old_public:
+                # We went from open to closed. Decrement the counters for
+                # reviewers, so it's not showing up in their dashboards.
                 self._decrement_reviewer_counts()
 
     def _increment_reviewer_counts(self):
+        """Increment the counters for all reviewers.
+
+        This will increment counters for all review groups and users that
+        are marked as reviewers (directly or indirectly).
+        """
         from reviewboard.accounts.models import LocalSiteProfile
 
-        groups = self.target_groups.all()
-        people = self.target_people.all()
+        groups = self.target_groups.values_list('pk', flat=True)
+        people = self.target_people.values_list('pk', flat=True)
 
         Group.incoming_request_count.increment(groups)
         LocalSiteProfile.direct_incoming_request_count.increment(
@@ -913,10 +1384,15 @@ class ReviewRequest(BaseReviewRequestDetails):
                 local_site=self.local_site))
 
     def _decrement_reviewer_counts(self):
+        """Decrement the counters for all reviewers.
+
+        This will decrement counters for all review groups and users that
+        are marked as reviewers (directly or indirectly).
+        """
         from reviewboard.accounts.models import LocalSiteProfile
 
-        groups = self.target_groups.all()
-        people = self.target_people.all()
+        groups = self.target_groups.values_list('pk', flat=True)
+        people = self.target_people.values_list('pk', flat=True)
 
         Group.incoming_request_count.decrement(groups)
         LocalSiteProfile.direct_incoming_request_count.decrement(
@@ -946,6 +1422,9 @@ class ReviewRequest(BaseReviewRequestDetails):
         elif self.issue_open_count > 0:
             approved = False
             failure = 'The review request has open issues.'
+        elif self.issue_verifying_count > 0:
+            approved = False
+            failure = 'The review request has unverified issues.'
 
         for hook in ReviewRequestApprovalHook.hooks:
             try:
@@ -982,6 +1461,7 @@ class ReviewRequest(BaseReviewRequestDetails):
 
     class Meta:
         app_label = 'reviews'
+        db_table = 'reviews_reviewrequest'
         ordering = ['-last_updated', 'submitter', 'summary']
         unique_together = (('commit_id', 'repository'),
                            ('changenum', 'repository'),
@@ -991,3 +1471,5 @@ class ReviewRequest(BaseReviewRequestDetails):
             ("can_submit_as_another_user", "Can submit as another user"),
             ("can_edit_reviewrequest", "Can edit review request"),
         )
+        verbose_name = _('Review Request')
+        verbose_name_plural = _('Review Requests')

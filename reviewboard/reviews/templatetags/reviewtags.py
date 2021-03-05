@@ -1,10 +1,9 @@
 from __future__ import unicode_literals
 
-import json
 import logging
+import warnings
 
 from django import template
-from django.db.models import Q
 from django.template import TemplateSyntaxError
 from django.template.defaultfilters import escapejs, stringfilter
 from django.template.loader import render_to_string
@@ -13,27 +12,34 @@ from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext_lazy as _
 from djblets.siteconfig.models import SiteConfiguration
-from djblets.util.decorators import basictag, blocktag
+from djblets.util.decorators import blocktag
 from djblets.util.humanize import humanize_list
+from djblets.util.templatetags.djblets_js import json_dumps_items
 
 from reviewboard.accounts.models import Profile, Trophy
-from reviewboard.reviews.fields import (get_review_request_fieldset,
+from reviewboard.accounts.trophies import UnknownTrophy
+from reviewboard.deprecation import RemovedInReviewBoard40Warning
+from reviewboard.diffviewer.diffutils import get_displayed_diff_line_ranges
+from reviewboard.reviews.actions import get_top_level_actions
+from reviewboard.reviews.fields import (get_review_request_field,
+                                        get_review_request_fieldset,
                                         get_review_request_fieldsets)
 from reviewboard.reviews.markdown_utils import (is_rich_text_default_for_user,
                                                 render_markdown,
                                                 normalize_text_for_edit)
 from reviewboard.reviews.models import (BaseComment, Group,
                                         ReviewRequest, ScreenshotComment,
-                                        FileAttachmentComment)
+                                        FileAttachmentComment,
+                                        GeneralComment)
 from reviewboard.reviews.ui.base import FileAttachmentReviewUI
+from reviewboard.site.urlresolvers import local_site_reverse
 
 
 register = template.Library()
 
 
-@register.tag
-@basictag(takes_context=False)
-def display_review_request_trophies(review_request):
+@register.simple_tag(takes_context=True)
+def display_review_request_trophies(context, review_request):
     """Returns the HTML for the trophies awarded to a review request."""
     trophy_models = Trophy.objects.get_trophies(review_request)
 
@@ -41,202 +47,272 @@ def display_review_request_trophies(review_request):
         return ''
 
     trophies = []
+
     for trophy_model in trophy_models:
-        try:
-            trophy_type_cls = trophy_model.trophy_type
-            trophy_type = trophy_type_cls()
-            trophies.append({
-                'image_url': trophy_type.image_url,
-                'image_width': trophy_type.image_width,
-                'image_height': trophy_type.image_height,
-                'text': trophy_type.get_display_text(trophy_model),
-            })
-        except Exception as e:
-            logging.error('Error when rendering trophy %r (%r): %s',
-                          trophy_model.pk, trophy_type_cls, e,
-                          exc_info=1)
+        trophy_type_cls = trophy_model.trophy_type
+
+        if trophy_type_cls is not UnknownTrophy:
+            try:
+                trophy_type = trophy_type_cls()
+                text = trophy_type.format_display_text(context['request'],
+                                                       trophy_model)
+
+                trophies.append({
+                    'image_urls': trophy_type.image_urls,
+                    'image_width': trophy_type.image_width,
+                    'image_height': trophy_type.image_height,
+                    'name': trophy_type.name,
+                    'text': text,
+                })
+            except Exception as e:
+                logging.error('Error when rendering trophy %r (%r): %s',
+                              trophy_model.pk, trophy_type_cls, e,
+                              exc_info=1)
 
     return render_to_string('reviews/trophy_box.html', {'trophies': trophies})
 
 
-@register.tag
-@blocktag
-def ifneatnumber(context, nodelist, rid):
+def _generate_reply_html(context, user, context_id, review, reply, timestamp,
+                         last_visited, text, rich_text, anchor_name,
+                         use_avatars, extra_context={}):
+    """Generate HTML for a single reply.
+
+    Args:
+        context (django.template.RequestContext):
+            The template context for the page.
+
+        user (django.contrib.auth.models.User):
+            The user who is viewing the replies.
+
+        context_id (unicode):
+            An internal ID used by the JavaScript code for storing and
+            categorizing replies.
+
+        review (reviewboard.reviews.models.review.Review):
+            The review being replied to.
+
+        reply (reviewboard.reviews.models.review.Review):
+            The reply to the review.
+
+        timestamp (datetime.datetime):
+            The timestamp of the reply.
+
+        last_visited (datetime.datetime):
+            The last time the user visited the page containing the replies.
+
+        text (unicode):
+            The reply text.
+
+        rich_text (bool):
+            Whether the reply text is in Markdown format.
+
+        anchor_name (unicode):
+            The name of the anchor for the comment, for use in linking to
+            this reply.
+
+        use_avatars (bool):
+            Whether avatars are enabled on Review Board. This will control
+            whether avatars are shown in the replies.
+
+        extra_context (dict):
+            Extra template context to include when rendering the page.
+
+    Returns:
+        django.utils.safestring.SafeText:
+        The HTML for the reply.
     """
-    Returns whether or not the specified number is a "neat" number.
-    This is a number with a special property, such as being a
-    palindrome or having trailing zeroes.
+    # Note that update() implies push().
+    context.update(dict({
+        'anchor_name': anchor_name,
+        'context_id': context_id,
+        'draft': not reply.public,
+        'id': reply.pk,
+        'reply_is_new': (
+            user is not None and
+            last_visited is not None and
+            reply.is_new_for_user(user, last_visited) and
+            not review.is_new_for_user(user, last_visited)),
+        'reply_user': reply.user,
+        'rich_text': rich_text,
+        'text': text,
+        'timestamp': timestamp,
+        'use_avatars': use_avatars,
+    }, **extra_context))
 
-    If the number is a neat number, the contained content is rendered,
-    and two variables, ``milestone`` and ``palindrome`` are defined.
-    """
-    if rid is None or rid < 1000:
-        return ""
-
-    ridstr = six.text_type(rid)
-    interesting = False
-
-    context.push()
-    context['milestone'] = False
-    context['palindrome'] = False
-
-    if rid >= 1000:
-        trailing = ridstr[1:]
-        if trailing == "0" * len(trailing):
-            context['milestone'] = True
-            interesting = True
-
-    if not interesting:
-        if ridstr == ''.join(reversed(ridstr)):
-            context['palindrome'] = True
-            interesting = True
-
-    if not interesting:
-        context.pop()
-        return ""
-
-    s = nodelist.render(context)
-    context.pop()
-    return s
-
-
-@register.tag
-@basictag(takes_context=True)
-def file_attachment_comments(context, file_attachment):
-    """Returns a JSON array of current comments for a file attachment."""
-    review_ui = file_attachment.review_ui
-
-    if not review_ui:
-        # For the purposes of serialization, we'll create a dummy ReviewUI.
-        review_ui = FileAttachmentReviewUI(file_attachment.review_request,
-                                           file_attachment)
-
-    # NOTE: We're setting this here because file attachments serialization
-    #       requires this to be set, but we don't necessarily have it set
-    #       by this time. We should rethink parts of this down the road, but
-    #       it requires dealing with some compatibility issues for subclasses.
-    review_ui.request = context['request']
-
-    return json.dumps(review_ui.serialize_comments(
-        file_attachment.get_comments()))
-
-
-@register.tag
-@basictag(takes_context=True)
-def reply_list(context, entry, comment, context_type, context_id):
-    """
-    Renders a list of comments of a specified type.
-
-    This is a complex, confusing function accepts lots of inputs in order
-    to display replies to a type of object. In each case, the replies will
-    be rendered using the template :template:`reviews/review_reply.html`.
-
-    If ``context_type`` is ``"diff_comments"``, ``"screenshot_comments"``
-    or ``"file_attachment_comments"``, the generated list of replies are to
-    ``comment``.
-
-    If ``context_type`` is ``"body_top"`` or ```"body_bottom"``,
-    the generated list of replies are to ``review``. Depending on the
-    ``context_type``, these will either be replies to the top of the
-    review body or to the bottom.
-
-    The ``context_id`` parameter has to do with the internal IDs used by
-    the JavaScript code for storing and categorizing the comments.
-    """
-    def generate_reply_html(reply, timestamp, text, rich_text,
-                            use_gravatars, comment_id=None):
-        context.push()
-        context.update({
-            'context_id': context_id,
-            'id': reply.id,
-            'review': review,
-            'timestamp': timestamp,
-            'text': text,
-            'reply_user': reply.user,
-            'draft': not reply.public,
-            'comment_id': comment_id,
-            'rich_text': rich_text,
-            'use_gravatars': use_gravatars,
-        })
-
-        result = render_to_string('reviews/review_reply.html', context)
+    try:
+        return render_to_string('reviews/review_reply.html', context)
+    finally:
         context.pop()
 
-        return result
 
-    def process_body_replies(queryset, attrname, user):
-        if user.is_anonymous():
-            queryset = queryset.filter(public=True)
-        else:
-            queryset = queryset.filter(Q(public=True) | Q(user=user))
+@register.simple_tag(takes_context=True)
+def comment_replies(context, review, comment, context_id):
+    """Render a list of replies to a comment.
 
-        s = ""
-        for reply_comment in queryset:
-            s += generate_reply_html(reply, reply.timestamp,
-                                     getattr(reply, attrname))
+    This loads all the replies made to a particular comment and renders
+    them in order by timestamp, showing the author of each comment, the
+    timestamp, and the text in the appropriate format.
 
-        return s
+    Args:
+        context (django.template.RequestContext):
+            The template context for the page.
+
+        review (reviewboard.reviews.models.review.Review):
+            The review being replied to.
+
+        comment (reviewboard.reviews.models.base_comment.BaseComment):
+            The comment being replied to.
+
+        context_id (unicode):
+            An internal ID used by the JavaScript code for storing and
+            categorizing replies.
+
+    Returns:
+        django.utils.safestring.SafeText:
+        The resulting HTML for the replies.
+    """
+    siteconfig = SiteConfiguration.objects.get_current()
+    use_avatars = siteconfig.get('avatars_enabled')
+    user = context['request'].user
+    last_visited = context.get('last_visited')
+
+    return mark_safe(''.join(
+        _generate_reply_html(
+            anchor_name='%s%d' % (reply_comment.anchor_prefix,
+                                  reply_comment.pk),
+            context=context,
+            context_id=context_id,
+            last_visited=last_visited,
+            reply=reply_comment.get_review(),
+            review=review,
+            rich_text=reply_comment.rich_text,
+            text=reply_comment.text,
+            timestamp=reply_comment.timestamp,
+            use_avatars=use_avatars,
+            user=user,
+            extra_context={
+                'comment_id': reply_comment.pk,
+            })
+        for reply_comment in comment.public_replies(user)
+    ))
+
+
+@register.simple_tag(takes_context=True)
+def review_body_replies(context, review, body_field, context_id):
+    """Render a list of replies to a body field of a review.
+
+    This loads all the replies made to a review's header/footer body field and
+    renders them in order by timestamp, showing the author of each comment,
+    the timestamp, and the text in the appropriate format.
+
+    Args:
+        context (django.template.RequestContext):
+            The template context for the page.
+
+        review (reviewboard.reviews.models.review.Review):
+            The review being replied to.
+
+        body_field (unicode):
+            The body field to look up replies to. This can be either
+            ``body_top`` or ``body_bottom``.
+
+        context_id (unicode):
+            An internal ID used by the JavaScript code for storing and
+            categorizing replies.
+
+    Returns:
+        django.utils.safestring.SafeText:
+        The resulting HTML for the replies.
+
+    Raises:
+        django.template.TemplateSyntaxError:
+            There was an invalid ``body_field`` provided.
+    """
+    if body_field not in ('body_top', 'body_bottom'):
+        raise TemplateSyntaxError('Invalid body field "%s" provided.'
+                                  % body_field)
 
     siteconfig = SiteConfiguration.objects.get_current()
-    use_gravatars = siteconfig.get('integration_gravatars')
+    use_avatars = siteconfig.get('avatars_enabled')
+    user = context['request'].user
+    last_visited = context.get('last_visited')
+    anchor_field_alias = {
+        'body_top': 'header',
+        'body_bottom': 'footer',
+    }
 
-    review = entry['review']
+    replies = getattr(review, 'public_%s_replies' % body_field)(user)
 
-    user = context.get('user', None)
-    if user.is_anonymous():
-        user = None
-
-    s = ""
-
-    if context_type in ('diff_comments', 'screenshot_comments',
-                        'file_attachment_comments'):
-        for reply_comment in comment.public_replies(user):
-            s += generate_reply_html(reply_comment.get_review(),
-                                     reply_comment.timestamp,
-                                     reply_comment.text,
-                                     reply_comment.rich_text,
-                                     use_gravatars,
-                                     reply_comment.pk)
-    elif context_type == "body_top" or context_type == "body_bottom":
-        replies = getattr(review, "public_%s_replies" % context_type)()
-
-        for reply in replies:
-            s += generate_reply_html(
-                reply,
-                reply.timestamp,
-                getattr(reply, context_type),
-                getattr(reply, '%s_rich_text' % context_type),
-                use_gravatars)
-
-        return s
-    else:
-        raise TemplateSyntaxError("Invalid context type passed")
-
-    return s
+    return mark_safe(''.join(
+        _generate_reply_html(
+            anchor_name='%s-reply%d' % (anchor_field_alias[body_field],
+                                        reply.pk),
+            context=context,
+            context_id=context_id,
+            last_visited=last_visited,
+            reply=reply,
+            review=review,
+            rich_text=getattr(reply, '%s_rich_text' % body_field),
+            text=getattr(reply, body_field),
+            timestamp=reply.timestamp,
+            use_avatars=use_avatars,
+            user=user)
+        for reply in replies
+    ))
 
 
 @register.inclusion_tag('reviews/review_reply_section.html',
                         takes_context=True)
-def reply_section(context, entry, comment, context_type, context_id,
+def reply_section(context, review, comment, context_type, context_id,
                   reply_to_text=''):
-    """
-    Renders a template for displaying a reply.
+    """Render a template for displaying a reply.
 
-    This takes the same parameters as :tag:`reply_list`. The template
-    rendered by this function, :template:`reviews/review_reply_section.html`,
-    is responsible for invoking :tag:`reply_list` and as such passes these
+    This takes the same parameters as :py:func:`reply_list`. The template
+    rendered by this function, ``reviews/review_reply_section.html``,
+    is responsible for invoking :py:func:`reply_list` and as such passes these
     variables through. It does not make use of them itself.
-    """
-    if comment != "":
-        if type(comment) is ScreenshotComment:
-            context_id += 's'
-        elif type(comment) is FileAttachmentComment:
-            context_id += 'f'
 
+    Args:
+        context (django.template.RequestContext):
+            The template context for the page.
+
+        review (reviewboard.reviews.models.review.Review):
+            The review being replied to.
+
+        context_type (unicode):
+            An indicator for the type of comment or section being replied to.
+
+        context_id (unicode):
+            The specific ID of the comment or section being replied to.
+
+        reply_to_text (unicode, optional):
+            The text contained in the reply.
+
+    Returns:
+        dict:
+        Information to provide to the template for the reply.
+    """
+    if context_type == 'body_top':
+        anchor_prefix = 'header-reply'
+    elif context_type == 'body_bottom':
+        anchor_prefix = 'footer-reply'
+    else:
+        assert comment
+        comment_cls = type(comment)
+
+        if comment_cls is FileAttachmentComment:
+            context_id += 'f'
+        elif comment_cls is GeneralComment:
+            context_id += 'g'
+        elif comment_cls is ScreenshotComment:
+            context_id += 's'
+
+        anchor_prefix = comment.anchor_prefix
         context_id += six.text_type(comment.id)
 
     return {
-        'entry': entry,
+        'reply_anchor_prefix': anchor_prefix,
+        'review': review,
         'comment': comment,
         'context_type': context_type,
         'context_id': context_id,
@@ -244,60 +320,7 @@ def reply_section(context, entry, comment, context_type, context_id,
         'local_site_name': context.get('local_site_name'),
         'reply_to_is_empty': reply_to_text == '',
         'request': context['request'],
-    }
-
-
-@register.inclusion_tag('datagrids/dashboard_entry.html', takes_context=True)
-def dashboard_entry(context, level, text, view, param=None):
-    """
-    Renders an entry in the dashboard sidebar.
-
-    This includes the name of the entry and the list of review requests
-    associated with it. The entry is rendered by the template
-    :template:`datagrids/dashboard_entry.html`.
-    """
-    user = context.get('user', None)
-    sidebar_counts = context.get('sidebar_counts', None)
-    starred = False
-    show_count = True
-    count = 0
-    url = None
-    group_name = None
-
-    if view == 'to-group':
-        group_name = param
-        count = sidebar_counts['groups'].get(
-            group_name,
-            sidebar_counts['starred_groups'].get(group_name, 0))
-    elif view == 'watched-groups':
-        starred = True
-        show_count = False
-    elif view in sidebar_counts:
-        count = sidebar_counts[view]
-
-        if view == 'starred':
-            starred = True
-    elif view == "url":
-        url = param
-        show_count = False
-    else:
-        raise template.TemplateSyntaxError(
-            "Invalid view type '%s' passed to 'dashboard_entry' tag." % view)
-
-    return {
-        'level': level,
-        'text': text,
-        'view': view,
-        'group_name': group_name,
-        'url': url,
-        'count': count,
-        'show_count': show_count,
-        'user': user,
-        'starred': starred,
-        'selected': (context.get('view', None) == view and
-                     (not group_name or
-                      context.get('group', None) == group_name)),
-        'local_site_name': context.get('local_site_name'),
+        'last_visited': context.get('last_visited'),
     }
 
 
@@ -310,6 +333,52 @@ def reviewer_list(review_request):
                           for group in review_request.target_groups.all()] +
                          [user.get_full_name() or user.username
                           for user in review_request.target_people.all()])
+
+
+@register.simple_tag(takes_context=True)
+def review_request_actions(context):
+    """Render all registered review request actions.
+
+    Args:
+        context (django.template.Context):
+            The collection of key-value pairs available in the template.
+
+    Returns:
+        unicode: The HTML content to be rendered.
+    """
+    content = []
+
+    for top_level_action in get_top_level_actions():
+        try:
+            content.append(top_level_action.render(context))
+        except Exception:
+            logging.exception('Error rendering top-level action %s',
+                              top_level_action.action_id)
+
+    return ''.join(content)
+
+
+@register.simple_tag(takes_context=True)
+def child_actions(context):
+    """Render all registered child actions.
+
+    Args:
+        context (django.template.Context):
+            The collection of key-value pairs available in the template.
+
+    Returns:
+        unicode: The HTML content to be rendered.
+    """
+    content = []
+
+    for child_action in context['menu_action']['child_actions']:
+        try:
+            content.append(child_action.render(context))
+        except Exception:
+            logging.exception('Error rendering child action %s',
+                              child_action.action_id)
+
+    return ''.join(content)
 
 
 @register.tag
@@ -335,16 +404,27 @@ def for_review_request_field(context, nodelist, review_request_details,
                               field_cls, e)
             continue
 
-        try:
-            if field.should_render(field.value):
-                context.push()
-                context['field'] = field
-                s.append(nodelist.render(context))
-                context.pop()
-        except Exception as e:
-            logging.exception(
-                'Error running should_render for field %r: %s',
-                field_cls, e)
+        if hasattr(field_cls.should_render, '__call__'):
+            warnings.warn('Field %r uses an old style should_render function '
+                          'which is deprecated and will be removed in the '
+                          'future. This should be converted to a property.'
+                          % field_cls,
+                          RemovedInReviewBoard40Warning)
+            try:
+                should_render = field.should_render(field.value)
+            except Exception as e:
+                logging.exception(
+                    'Error running should_render for field %r: %s',
+                    field_cls, e)
+                should_render = True
+        else:
+            should_render = field.should_render
+
+        if should_render:
+            context.push()
+            context['field'] = field
+            s.append(nodelist.render(context))
+            context.pop()
 
     return ''.join(s)
 
@@ -352,18 +432,30 @@ def for_review_request_field(context, nodelist, review_request_details,
 @register.tag
 @blocktag(end_prefix='end_')
 def for_review_request_fieldset(context, nodelist, review_request_details):
-    """Loops through all fieldsets.
+    """Loop through all fieldsets.
 
-    This skips the "main" fieldset, as that's handled separately by the
-    template.
+    Args:
+        context (dict):
+            The render context.
+
+        nodelist (django.template.NodeList):
+            The contents of the template inside the blocktag.
+
+        review_request_details (reviewboard.reviews.models.
+                                base_review_request_details.
+                                BaseReviewRequestDetails):
+            The review request or draft being rendered.
+
+    Returns:
+        unicode:
+        The rendered tag contents.
     """
     s = []
     is_first = True
     review_request = review_request_details.get_review_request()
     user = context['request'].user
-    fieldset_classes = get_review_request_fieldsets(include_main=False)
 
-    for fieldset_cls in fieldset_classes:
+    for fieldset_cls in get_review_request_fieldsets():
         try:
             if not fieldset_cls.is_empty():
                 try:
@@ -372,7 +464,7 @@ def for_review_request_fieldset(context, nodelist, review_request_details):
                     logging.error('Error instantiating ReviewRequestFieldset '
                                   '%r: %s', fieldset_cls, e, exc_info=1)
 
-                context.push()
+                # Note that update() implies push().
                 context.update({
                     'fieldset': fieldset,
                     'show_fieldset_required': (
@@ -384,8 +476,11 @@ def for_review_request_fieldset(context, nodelist, review_request_details):
                         'first': is_first,
                     }
                 })
-                s.append(nodelist.render(context))
-                context.pop()
+
+                try:
+                    s.append(nodelist.render(context))
+                finally:
+                    context.pop()
 
                 is_first = False
         except Exception as e:
@@ -395,9 +490,72 @@ def for_review_request_fieldset(context, nodelist, review_request_details):
     return ''.join(s)
 
 
-@register.assignment_tag
-def has_usable_review_ui(user, review_request, file_attachment):
-    """Returns whether a review UI is set and can be used."""
+@register.tag
+@blocktag(end_prefix='end_')
+def review_request_field(context, nodelist, review_request_details, field_id):
+    """Render a block with a specific review request field.
+
+    Args:
+        context (dict):
+            The render context.
+
+        nodelist (django.template.NodeList):
+            The contents of the template inside the blocktag.
+
+        review_request_details (reviewboard.reviews.models.
+                                base_review_request_details.
+                                BaseReviewRequestDetails):
+            The review request or draft being rendered.
+
+        field_id (unicode):
+            The ID of the field to add to the render context.
+
+    Returns:
+        unicode:
+        The rendered block.
+    """
+    request = context.get('request')
+
+    try:
+        field_cls = get_review_request_field(field_id)
+        field = field_cls(review_request_details, request=request)
+    except Exception as e:
+        logging.exception('Error instantiating field %r: %s',
+                          field_id, e)
+        return ''
+
+    context.push()
+
+    try:
+        context['field'] = field
+        return nodelist.render(context)
+    finally:
+        context.pop()
+
+
+def _has_usable_review_ui(user, review_request, file_attachment):
+    """Return whether there's a usable review UI for a file attachment.
+
+    This will check that a review UI exists for the file attachment and
+    that it's enabled for the provided user and review request.
+
+    Args:
+        user (django.contrib.auth.models.User):
+            The user who would be accessing the review UI.
+
+        review_request (reviewboard.reviews.models.review_request.
+                        ReviewRequest):
+            The review request that the review UI would be for.
+
+        file_attachment (reviewboard.attachments.models.FileAttachment):
+            The file attachment that review UI would review.
+
+    Returns:
+        bool:
+        ``True`` if a review UI exists and is usable. ``False`` if the
+        review UI does not exist, cannot be used, or there's an error when
+        checking.
+    """
     review_ui = file_attachment.review_ui
 
     try:
@@ -410,6 +568,12 @@ def has_usable_review_ui(user, review_request, file_attachment):
                       'FileAttachmentReviewUI %r: %s',
                       review_ui, e, exc_info=1)
         return False
+
+
+@register.assignment_tag
+def has_usable_review_ui(user, review_request, file_attachment):
+    """Returns whether a review UI is set and can be used."""
+    return _has_usable_review_ui(user, review_request, file_attachment)
 
 
 @register.filter
@@ -433,18 +597,23 @@ def bug_url(bug_id, review_request):
     return None
 
 
-@register.tag
-@basictag(takes_context=True)
+@register.simple_tag(takes_context=True)
 def star(context, obj):
-    """
-    Renders the code for displaying a star used for starring items.
+    """Render the code for displaying a star used for starring items.
 
-    The rendered code should handle click events so that the user can
-    toggle the star. The star is rendered by the template
-    :template:`reviews/star.html`.
+    The rendered code should handle click events so that the user can toggle
+    the star. The star is rendered by the template ``reviews/star.html``.
 
-    The passed object must be either a :model:`reviews.ReviewRequest` or
-    a :model:`reviews.Group`.
+    Args:
+        context (django.template.RequestContext):
+            The template context for the page.
+
+        obj (reviewboard.reviews.models.review_request.ReviewRequest or
+             reviewboard.reviews.models.group.Group):
+
+    Returns:
+        django.utils.safestring.SafeText:
+        The rendered HTML for the star.
     """
     return render_star(context.get('user', None), obj)
 
@@ -461,9 +630,9 @@ def render_star(user, obj):
 
     if not hasattr(obj, 'starred'):
         try:
-            profile = user.get_profile()
+            profile = user.get_profile(create_if_missing=False)
         except Profile.DoesNotExist:
-            return ""
+            return ''
 
     if isinstance(obj, ReviewRequest):
         obj_info = {
@@ -475,7 +644,7 @@ def render_star(user, obj):
             starred = obj.starred
         else:
             starred = \
-                profile.starred_review_requests.filter(pk=obj.id).count() > 0
+                profile.starred_review_requests.filter(pk=obj.id).exists()
     elif isinstance(obj, Group):
         obj_info = {
             'type': 'groups',
@@ -485,8 +654,7 @@ def render_star(user, obj):
         if hasattr(obj, 'starred'):
             starred = obj.starred
         else:
-            starred = \
-                profile.starred_groups.filter(pk=obj.id).count() > 0
+            starred = profile.starred_groups.filter(pk=obj.id).exists()
     else:
         raise template.TemplateSyntaxError(
             "star tag received an incompatible object type (%s)" %
@@ -521,6 +689,7 @@ def comment_issue(context, review_request, comment, comment_type):
         'issue_status': issue_status,
         'review': comment.get_review(),
         'interactive': comment.can_change_issue_status(user),
+        'can_verify': comment.can_verify_issue_status(user),
     }
 
 
@@ -549,6 +718,9 @@ def issue_status_icon(status):
         return 'rb-icon-issue-resolved'
     elif status == BaseComment.DROPPED:
         return 'rb-icon-issue-dropped'
+    elif status in (BaseComment.VERIFYING_RESOLVED,
+                    BaseComment.VERIFYING_DROPPED):
+        return 'rb-icon-issue-verifying'
     else:
         raise ValueError('Unknown comment issue status "%s"' % status)
 
@@ -561,8 +733,7 @@ def _render_markdown(text, is_rich_text):
         return text
 
 
-@register.tag
-@basictag(takes_context=True)
+@register.simple_tag(takes_context=True)
 def expand_fragment_link(context, expanding, tooltip,
                          expand_above, expand_below, text=None):
     """Renders a diff comment fragment expansion link.
@@ -587,8 +758,7 @@ def expand_fragment_link(context, expanding, tooltip,
     })
 
 
-@register.tag
-@basictag(takes_context=True)
+@register.simple_tag(takes_context=True)
 def expand_fragment_header_link(context, header):
     """Render a diff comment fragment header expansion link.
 
@@ -607,8 +777,7 @@ def expand_fragment_header_link(context, header):
     })
 
 
-@register.tag('normalize_text_for_edit')
-@basictag(takes_context=True)
+@register.simple_tag(name='normalize_text_for_edit', takes_context=True)
 def _normalize_text_for_edit(context, text, rich_text, escape_js=False):
     text = normalize_text_for_edit(context['request'].user, text, rich_text,
                                    escape_html=not escape_js)
@@ -619,8 +788,7 @@ def _normalize_text_for_edit(context, text, rich_text, escape_js=False):
     return text
 
 
-@register.tag
-@basictag(takes_context=True)
+@register.simple_tag(takes_context=True)
 def rich_text_classname(context, rich_text):
     if rich_text or is_rich_text_default_for_user(context['request'].user):
         return 'rich-text'
@@ -628,29 +796,334 @@ def rich_text_classname(context, rich_text):
     return ''
 
 
-@register.tag
-@basictag(takes_context=True)
-def patched_file_line_numbers(context):
-    """Renders the line numbers of the patched file in a review comment entry.
+@register.simple_tag(takes_context=True)
+def diff_comment_line_numbers(context, chunks, comment):
+    """Render the changed line number ranges for a diff, for use in e-mail.
 
-    Prints nothing if the only chunk is a 'delete' type.
+    This will display the original and patched line ranges covered by a
+    comment, transforming the comment's stored virtual line ranges into
+    human-readable ranges. It's intended for use in e-mail.
+
+    The template tag's output will list the original line ranges only if
+    there are ranges to show, and same with the patched line ranges.
+
+    Args:
+        context (django.template.Context):
+            The template context.
+
+        chunks (list):
+            The list of chunks for the diff.
+
+        comment (reviewboard.reviews.models.diff_comment.Comment):
+            The comment containing the line ranges.
+
+    Returns:
+        unicode:
+        A string representing the line ranges for the comment.
     """
-    chunks = context['entry']['chunks']
-    patched_start_line = context['entry']['comment'].last_line
-    patched_end_line = 1
-    rendering_text = False
-
-    for chunk in chunks:
-        if chunk['change'] != 'delete':
-            rendering_text = True
-            first_chunk_line = chunk['lines'][0]
-            last_chunk_line = chunk['lines'][-1]
-            patched_start_line = min(patched_start_line, first_chunk_line[4])
-            patched_end_line = max(patched_end_line, last_chunk_line[4])
-
-    if not rendering_text:
+    if comment.first_line is None:
+        # Comments without a line number represent the entire file.
         return ''
-    elif patched_start_line == patched_end_line:
-        return _('(line %d)') % patched_start_line
+
+    orig_range_info, patched_range_info = get_displayed_diff_line_ranges(
+        chunks, comment.first_line, comment.last_line)
+
+    if orig_range_info:
+        orig_start_linenum, orig_end_linenum = \
+            orig_range_info['display_range']
+
+        if orig_start_linenum == orig_end_linenum:
+            orig_lines_str = '%s' % orig_start_linenum
+            orig_lines_prefix = 'Line'
+        else:
+            orig_lines_str = '%s-%s' % (orig_start_linenum, orig_end_linenum)
+            orig_lines_prefix = 'Lines'
     else:
-        return _('(lines %d - %d)') % (patched_start_line, patched_end_line)
+        orig_lines_str = None
+        orig_lines_prefix = None
+
+    if patched_range_info:
+        patched_start_linenum, patched_end_linenum = \
+            patched_range_info['display_range']
+
+        if patched_start_linenum == patched_end_linenum:
+            patched_lines_str = '%s' % patched_start_linenum
+            patched_lines_prefix = 'Lines'
+        else:
+            patched_lines_str = '%s-%s' % (patched_start_linenum,
+                                           patched_end_linenum)
+            patched_lines_prefix = 'Lines'
+    else:
+        patched_lines_str = None
+        patched_lines_prefix = None
+
+    if orig_lines_str and patched_lines_str:
+        return '%s %s (original), %s (patched)' % (
+            orig_lines_prefix, orig_lines_str, patched_lines_str)
+    elif orig_lines_str:
+        return '%s %s (original)' % (orig_lines_prefix, orig_lines_str)
+    elif patched_lines_str:
+        return '%s %s (patched)' % (patched_lines_prefix, patched_lines_str)
+    else:
+        return ''
+
+
+@register.simple_tag(takes_context=True)
+def reviewable_page_model_data(context):
+    """Output JSON-serialized data for a RB.ReviewablePage model.
+
+    The data will be used by :js:class:`RB.ReviewablePage` in order to
+    populate the review request and editor with the necessary state.
+
+    Args:
+        context (django.template.RequestContext):
+            The current template context.
+
+    Returns:
+        unicode:
+        The resulting JSON-serialized data. This consists of keys that are
+        meant to be injected into an existing dictionary.
+    """
+    request = context['request']
+    user = request.user
+    review_request = context['review_request']
+    review_request_details = context['review_request_details']
+    draft = context['draft']
+    close_description = context['close_description']
+    close_description_rich_text = context['close_description_rich_text']
+
+    if review_request.local_site:
+        local_site_prefix = 's/%s/' % review_request.local_site.name
+    else:
+        local_site_prefix = ''
+
+    # Build data for the RB.ReviewRequest
+    if review_request.status == review_request.PENDING_REVIEW:
+        state_data = 'PENDING'
+    elif review_request.status == review_request.SUBMITTED:
+        state_data = 'CLOSE_SUBMITTED'
+    elif review_request.status == review_request.DISCARDED:
+        state_data = 'CLOSE_DISCARDED'
+    else:
+        raise ValueError('Unexpected ReviewRequest.status value "%s"'
+                         % review_request.status)
+
+    review_request_data = {
+        'id': review_request.display_id,
+        'localSitePrefix': local_site_prefix,
+        'branch': review_request_details.branch,
+        'bugsClosed': review_request_details.get_bug_list(),
+        'closeDescription': normalize_text_for_edit(
+            user=user,
+            text=close_description,
+            rich_text=close_description_rich_text,
+            escape_html=False),
+        'closeDescriptionRichText': close_description_rich_text,
+        'description': normalize_text_for_edit(
+            user=user,
+            text=review_request_details.description,
+            rich_text=review_request_details.description_rich_text,
+            escape_html=False),
+        'descriptionRichText': review_request_details.description_rich_text,
+        'hasDraft': draft is not None,
+        'lastUpdatedTimestamp': review_request.last_updated,
+        'public': review_request.public,
+        'reviewURL': review_request.get_absolute_url(),
+        'state': state_data,
+        'summary': review_request_details.summary,
+        'targetGroups': [
+            {
+                'name': group.name,
+                'url': group.get_absolute_url(),
+            }
+            for group in review_request_details.target_groups.all()
+        ],
+        'targetPeople': [
+            {
+                'username': target_user.username,
+                'url': local_site_reverse('user',
+                                          args=[target_user],
+                                          request=request)
+            }
+            for target_user in review_request_details.target_people.all()
+        ],
+        'testingDone': normalize_text_for_edit(
+            user=user,
+            text=review_request_details.testing_done,
+            rich_text=review_request_details.testing_done_rich_text,
+            escape_html=False),
+        'testingDoneRichText': review_request_details.testing_done_rich_text,
+    }
+
+    if user.is_authenticated():
+        review_request_visit = context['review_request_visit']
+
+        if review_request_visit.visibility == review_request_visit.VISIBLE:
+            visibility_data = 'VISIBLE'
+        elif review_request_visit.visibility == review_request_visit.ARCHIVED:
+            visibility_data = 'ARCHIVED'
+        elif review_request_visit.visibility == review_request_visit.MUTED:
+            visibility_data = 'MUTED'
+        else:
+            raise ValueError(
+                'Unexpected ReviewRequestVisit.visibility value "%s"'
+                % review_request_visit.visibility)
+
+        review_request_data['visibility'] = visibility_data
+
+    repository = review_request.repository
+
+    if repository:
+        scmtool = repository.get_scmtool()
+
+        review_request_data['repository'] = {
+            'id': repository.pk,
+            'name': repository.name,
+            'scmtoolName': scmtool.name,
+            'requiresBasedir': not scmtool.diffs_use_absolute_paths,
+            'requiresChangeNumber': scmtool.supports_pending_changesets,
+            'supportsPostCommit': repository.supports_post_commit,
+        }
+
+        if repository.bug_tracker:
+            review_request_data['bugTrackerURL'] = \
+                local_site_reverse(
+                    'bug_url',
+                    args=[review_request.display_id, '--bug_id--'],
+                    request=request)
+
+    if draft:
+        review_request_data['submitter'] = {
+            'title': draft.submitter.username,
+            'url': draft.submitter.get_absolute_url(),
+        }
+
+    # Build the data for the RB.ReviewRequestEditor.
+    editor_data = {
+        'closeDescriptionRenderedText': _render_markdown(
+            close_description,
+            close_description_rich_text),
+        'hasDraft': draft is not None,
+        'mutableByUser': context['mutable_by_user'],
+        'showSendEmail': context['send_email'],
+        'statusMutableByUser': context['status_mutable_by_user'],
+    }
+
+    # Build extra data for the RB.ReviewRequest.
+    extra_review_request_draft_data = {}
+
+    if draft and draft.changedesc:
+        extra_review_request_draft_data.update({
+            'changeDescription': normalize_text_for_edit(
+                user=user,
+                text=draft.changedesc.text,
+                rich_text=draft.changedesc.rich_text,
+                escape_html=False),
+            'changeDescriptionRichText': draft.changedesc.rich_text,
+        })
+
+        editor_data['changeDescriptionRenderedText'] = _render_markdown(
+            draft.changedesc.text, draft.changedesc.rich_text)
+
+        if draft.diffset:
+            extra_review_request_draft_data['interdiffLink'] = \
+                local_site_reverse(
+                    'view-interdiff',
+                    args=[
+                        review_request.display_id,
+                        draft.diffset.revision - 1,
+                        draft.diffset.revision
+                    ],
+                    request=request)
+
+    # Build the file attachments data for the editor data.
+    file_attachments_data = []
+
+    for file_attachment in context.get('file_attachments', []):
+        if draft:
+            caption = file_attachment.draft_caption
+        else:
+            caption = file_attachment.caption
+
+        file_attachment_data = {
+            'id': file_attachment.pk,
+            'loaded': True,
+            'caption': caption,
+            'downloadURL': file_attachment.get_absolute_url(),
+            'filename': file_attachment.filename,
+            'revision': file_attachment.attachment_revision,
+            'thumbnailHTML': file_attachment.thumbnail,
+        }
+
+        if file_attachment.attachment_history_id:
+            file_attachment_data['attachmentHistoryID'] = \
+                file_attachment.attachment_history_id
+
+        if _has_usable_review_ui(user, review_request, file_attachment):
+            file_attachment_data['reviewURL'] = \
+                local_site_reverse(
+                    'file-attachment',
+                    args=[review_request.display_id, file_attachment.pk],
+                    request=request)
+
+        file_attachments_data.append(file_attachment_data)
+
+    if file_attachments_data:
+        editor_data['fileAttachments'] = file_attachments_data
+
+    # Build the file attachment comments data for the editor data.
+    file_attachment_comments_data = {}
+
+    for file_attachment in context.get('all_file_attachments', []):
+        review_ui = file_attachment.review_ui
+
+        if not review_ui:
+            # For the purposes of serialization, we'll create a dummy ReviewUI.
+            review_ui = FileAttachmentReviewUI(file_attachment.review_request,
+                                               file_attachment)
+
+        # NOTE: We're setting this here because file attachments serialization
+        #       requires this to be set, but we don't necessarily have it set
+        #       by this time. We should rethink parts of this down the road,
+        #       but it requires dealing with some compatibility issues for
+        #       subclasses.
+        review_ui.request = request
+
+        file_attachment_comments_data[file_attachment.pk] = \
+            review_ui.serialize_comments(file_attachment.get_comments())
+
+    if file_attachment_comments_data:
+        editor_data['fileAttachmentComments'] = file_attachment_comments_data
+
+    # And we're done! Assemble it together and chop off the outer dictionary
+    # so it can be injected correctly.
+    return json_dumps_items({
+        'checkForUpdates': True,
+        'reviewRequestData': review_request_data,
+        'extraReviewRequestDraftData': extra_review_request_draft_data,
+        'editorData': editor_data,
+    })
+
+
+@register.simple_tag(takes_context=True)
+def render_review_request_entries(context, entries):
+    """Render a series of entries on the page.
+
+    Args:
+        context (django.template.RequestContext):
+            The existing template context on the page.
+
+        entries (list of
+                 reviewboard.reviews.detail.BaseReviewRequestPageEntry):
+            The entries to render.
+
+    Returns:
+        unicode:
+        The resulting HTML for the entries.
+    """
+    request = context['request']
+
+    return ''.join(
+        entry.render_to_string(request, context)
+        for entry in entries
+    )

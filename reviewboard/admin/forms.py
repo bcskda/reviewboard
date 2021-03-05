@@ -31,16 +31,22 @@ import os
 import re
 
 from django import forms
+from django.contrib import messages
+from django.contrib.admin.widgets import FilteredSelectMultiple
 from django.contrib.sites.models import Site
 from django.conf import settings
+from django.core.cache import get_cache
 from django.core.exceptions import ValidationError
 from django.core.mail import send_mail
 from django.utils import six
 from django.utils.six.moves.urllib.parse import urlparse
-from django.utils.translation import ugettext as _
+from django.utils.translation import (ugettext,
+                                      ugettext_lazy as _)
+from djblets.avatars.registry import AvatarServiceRegistry
 from djblets.cache.backend_compat import normalize_cache_backend
 from djblets.cache.forwarding_backend import DEFAULT_FORWARD_CACHE_ALIAS
 from djblets.forms.fields import TimeZoneField
+from djblets.mail.message import EmailMessage
 from djblets.siteconfig.forms import SiteSettingsForm
 from djblets.siteconfig.models import SiteConfiguration
 
@@ -50,6 +56,8 @@ from reviewboard.admin.checks import (get_can_use_amazon_s3,
                                       get_can_use_couchdb)
 from reviewboard.admin.siteconfig import load_site_config
 from reviewboard.admin.support import get_install_key
+from reviewboard.avatars import avatar_services
+from reviewboard.search import search_backend_registry
 from reviewboard.ssh.client import SSHClient
 
 
@@ -79,6 +87,9 @@ class GeneralSettingsForm(SiteSettingsForm):
         'memcached': 'cache_host',
     }
 
+    CACHE_VALIDATION_KEY = '__rb-cache-validation__'
+    CACHE_VALIDATION_VALUE = 12345
+
     company = forms.CharField(
         label=_("Company/Organization"),
         help_text=_("The optional name of your company or organization. "
@@ -94,18 +105,22 @@ class GeneralSettingsForm(SiteSettingsForm):
 
     site_media_url = forms.CharField(
         label=_("Media URL"),
-        help_text=_("The URL to the media files. Leave blank to use the "
-                    "default media path on this server."),
-        required=False,
+        help_text=(_('The URL to the media files. Set to '
+                     '<code>%smedia/</code> to use the default media path on '
+                     'this server.')
+                   % settings.SITE_ROOT),
+        required=True,
         widget=forms.TextInput(attrs={'size': '30'}))
 
     site_static_url = forms.CharField(
         label=_('Static URL'),
-        help_text=_('The URL to the static files, such as JavaScript files, '
-                    'CSS files, and images that are bundled with Review Board '
-                    'or third-party extensions. Leave blank to use the '
-                    'default static path on this server.'),
-        required=False,
+        help_text=(_('The URL to the static files, such as JavaScript files, '
+                     'CSS files, and images that are bundled with Review '
+                     'Board or third-party extensions. Set to '
+                     '<code>%sstatic/</code> to use the default static path '
+                     'on this server.')
+                   % settings.SITE_ROOT),
+        required=True,
         widget=forms.TextInput(attrs={'size': '30'}))
 
     site_admin_name = forms.CharField(
@@ -122,25 +137,6 @@ class GeneralSettingsForm(SiteSettingsForm):
         required=True,
         help_text=_("The time zone used for all dates on this server."))
 
-    search_enable = forms.BooleanField(
-        label=_("Enable search"),
-        help_text=_("Provides a search field for quickly searching through "
-                    "review requests."),
-        required=False)
-
-    search_results_per_page = forms.IntegerField(
-        label=_("Search results per page"),
-        help_text=_("Number of search results to show per page."),
-        min_value=1,
-        required=False)
-
-    search_index_file = forms.CharField(
-        label=_("Search index directory"),
-        help_text=_("The directory that search index data should be stored "
-                    "in."),
-        required=False,
-        widget=forms.TextInput(attrs={'size': '50'}))
-
     cache_type = forms.ChoiceField(
         label=_("Cache Backend"),
         choices=CACHE_TYPE_CHOICES,
@@ -151,7 +147,10 @@ class GeneralSettingsForm(SiteSettingsForm):
         label=_("Cache Path"),
         help_text=_('The file location for the cache.'),
         required=True,
-        widget=forms.TextInput(attrs={'size': '50'}))
+        widget=forms.TextInput(attrs={'size': '50'}),
+        error_messages={
+            'required': 'A valid cache path must be provided.'
+        })
 
     cache_host = forms.CharField(
         label=_("Cache Hosts"),
@@ -159,12 +158,10 @@ class GeneralSettingsForm(SiteSettingsForm):
                     'form. Multiple hosts can be specified by separating '
                     'them with a semicolon (;).'),
         required=True,
-        widget=forms.TextInput(attrs={'size': '50'}))
-
-    integration_gravatars = forms.BooleanField(
-        label=_("Use Gravatar images"),
-        help_text=_("Use gravatar.com for user avatars"),
-        required=False)
+        widget=forms.TextInput(attrs={'size': '50'}),
+        error_messages={
+            'required': 'A valid cache host must be provided.'
+        })
 
     def load(self):
         """Load the form."""
@@ -187,12 +184,12 @@ class GeneralSettingsForm(SiteSettingsForm):
 
         if settings.DEBUG:
             self.fields['cache_type'].choices += (
-                ('locmem', _('Local memory cache')),
+                ('locmem', ugettext('Local memory cache')),
             )
 
         if cache_type == 'custom':
             self.fields['cache_type'].choices += (
-                ('custom', _('Custom')),
+                ('custom', ugettext('Custom')),
             )
             cache_locations = []
         elif cache_type != 'locmem':
@@ -225,8 +222,10 @@ class GeneralSettingsForm(SiteSettingsForm):
             domain_name = domain_name[:-1]
 
         site = Site.objects.get_current()
-        site.domain = domain_name
-        site.save()
+
+        if site.domain != domain_name:
+            site.domain = domain_name
+            site.save(update_fields=['domain'])
 
         self.siteconfig.set("site_domain_method", domain_method)
 
@@ -259,14 +258,86 @@ class GeneralSettingsForm(SiteSettingsForm):
         load_site_config()
 
     def full_clean(self):
-        """Clean and validate all form fields."""
-        cache_type = self['cache_type'].data or self['cache_type'].initial
+        """Begin cleaning and validating all form fields.
+
+        This is the beginning of the form validation process. Before cleaning
+        the fields, this will set the "required" states for the caching
+        fields, based on the chosen caching type. This will enable or disable
+        validation for those particular fields.
+
+        Returns:
+            dict:
+            The cleaned form data.
+        """
+        orig_required = {}
+        cache_type = (self['cache_type'].data or
+                      self.fields['cache_type'].initial)
 
         for iter_cache_type, field in six.iteritems(
                 self.CACHE_LOCATION_FIELD_MAP):
+            orig_required[field] = self.fields[field].required
             self.fields[field].required = (cache_type == iter_cache_type)
 
-        return super(GeneralSettingsForm, self).full_clean()
+        cleaned_data = super(GeneralSettingsForm, self).full_clean()
+
+        # Reset the required flags for any modified field.
+        for field, required in six.iteritems(orig_required):
+            self.fields[field].required = required
+
+        return cleaned_data
+
+    def clean(self):
+        """Clean and validate the form fields.
+
+        This is called after all individual fields are validated. It does
+        the remaining work of checking to make sure the resulting configuration
+        is valid.
+
+        Returns:
+            dict:
+            The cleaned form data.
+        """
+        cleaned_data = super(GeneralSettingsForm, self).clean()
+
+        if 'cache_type' not in self.errors:
+            cache_type = cleaned_data['cache_type']
+            cache_location_field = \
+                self.CACHE_LOCATION_FIELD_MAP.get(cache_type)
+
+            if cache_location_field not in self.errors:
+                cache_backend = None
+
+                try:
+                    cache_backend = get_cache(
+                        self.CACHE_BACKENDS_MAP[cache_type],
+                        LOCATION=cleaned_data.get(cache_location_field))
+
+                    cache_backend.set(self.CACHE_VALIDATION_KEY,
+                                      self.CACHE_VALIDATION_VALUE)
+                    value = cache_backend.get(self.CACHE_VALIDATION_KEY)
+                    cache_backend.delete(self.CACHE_VALIDATION_KEY)
+
+                    if value != self.CACHE_VALIDATION_VALUE:
+                        self.errors[cache_location_field] = self.error_class([
+                            _('Unable to store and retrieve values from this '
+                              'caching backend. There may be a problem '
+                              'connecting.')
+                        ])
+                except Exception as e:
+                    self.errors[cache_location_field] = self.error_class([
+                        _('Error with this caching configuration: %s')
+                        % e
+                    ])
+
+                # If the cache backend is open, try closing it. This may fail,
+                # so we want to ignore any failures.
+                if cache_backend is not None:
+                    try:
+                        cache_backend.close()
+                    except:
+                        pass
+
+        return cleaned_data
 
     def clean_cache_host(self):
         """Validate that the cache_host field is provided if required."""
@@ -274,7 +345,7 @@ class GeneralSettingsForm(SiteSettingsForm):
 
         if self.fields['cache_host'].required and not cache_host:
             raise ValidationError(
-                _('A valid cache host must be provided.'))
+                ugettext('A valid cache host must be provided.'))
 
         return cache_host
 
@@ -284,31 +355,9 @@ class GeneralSettingsForm(SiteSettingsForm):
 
         if self.fields['cache_path'].required and not cache_path:
             raise ValidationError(
-                _('A valid cache path must be provided.'))
+                ugettext('A valid cache path must be provided.'))
 
         return cache_path
-
-    def clean_search_index_file(self):
-        """Validate that the specified index file is valid.
-
-        This checks to make sure that the provided file path is an absolute
-        path, and that the directory is writable by the web server.
-        """
-        index_file = self.cleaned_data['search_index_file'].strip()
-
-        if index_file:
-            if not os.path.isabs(index_file):
-                raise ValidationError(
-                    _("The search index path must be absolute."))
-
-            if (os.path.exists(index_file) and
-                    not os.access(index_file, os.W_OK)):
-                raise ValidationError(
-                    _('The search index path is not writable. Make sure the '
-                      'web server has write access to it and its parent '
-                      'directory.'))
-
-        return index_file
 
     class Meta:
         title = _("General Settings")
@@ -326,17 +375,6 @@ class GeneralSettingsForm(SiteSettingsForm):
                 'classes': ('wide',),
                 'title': _('Cache Settings'),
                 'fields': ('cache_type', 'cache_path', 'cache_host'),
-            },
-            {
-                'classes': ('wide',),
-                'title': _("Search"),
-                'fields': ('search_enable', 'search_results_per_page',
-                           'search_index_file'),
-            },
-            {
-                'classes': ('wide',),
-                'title': _("Third-party Integrations"),
-                'fields': ('integration_gravatars',),
             },
         )
 
@@ -362,7 +400,7 @@ class AuthenticationSettingsForm(SiteSettingsForm):
 
     def __init__(self, siteconfig, *args, **kwargs):
         """Initialize the form."""
-        from reviewboard.accounts.backends import get_registered_auth_backends
+        from reviewboard.accounts.backends import auth_backends
 
         super(AuthenticationSettingsForm, self).__init__(siteconfig,
                                                          *args, **kwargs)
@@ -383,7 +421,7 @@ class AuthenticationSettingsForm(SiteSettingsForm):
         backend_choices = []
         builtin_auth_choice = None
 
-        for backend in get_registered_auth_backends():
+        for backend in auth_backends:
             backend_id = backend.backend_id
 
             try:
@@ -475,17 +513,143 @@ class AuthenticationSettingsForm(SiteSettingsForm):
         )
 
 
+class AvatarServicesForm(SiteSettingsForm):
+    """A form for managing avatar services."""
+
+    avatars_enabled = forms.BooleanField(
+        label=_('Enable avatars'),
+        required=False)
+
+    enabled_services = forms.MultipleChoiceField(
+        label='Enabled avatar services',
+        help_text=_('The avatar services which are available to be used.'),
+        required=False,
+        widget=FilteredSelectMultiple(_('Avatar Services'), False))
+
+    default_service = forms.ChoiceField(
+        label=_('Default avatar service'),
+        help_text=_('The avatar service to be used by default for users who '
+                    'do not have an avatar service configured. This must be '
+                    'one of the enabled avatar services below.'),
+        required=False
+    )
+
+    def __init__(self, *args, **kwargs):
+        super(AvatarServicesForm, self).__init__(*args, **kwargs)
+        default_choices = [('none', 'None')]
+        enable_choices = []
+
+        for service in avatar_services:
+            default_choices.append((service.avatar_service_id, service.name))
+            enable_choices.append((service.avatar_service_id, service.name))
+
+        self.fields['default_service'].choices = default_choices
+        self.fields['enabled_services'].choices = enable_choices
+        self.fields['enabled_services'].initial = [
+            service.avatar_service_id
+            for service in avatar_services.enabled_services
+        ]
+
+        default_service = avatar_services.default_service
+
+        if avatar_services.default_service is not None:
+            self.fields['default_service'].initial = \
+                default_service.avatar_service_id
+
+    def clean_enabled_services(self):
+        """Clean the enabled_services field.
+
+        Raises:
+            django.core.exceptions.ValidationError:
+                Raised if an unknown service is attempted to be enabled.
+        """
+        for service_id in self.cleaned_data['enabled_services']:
+            if not avatar_services.has_service(service_id):
+                raise ValidationError('Unknown service "%s"' % service_id)
+
+        return self.cleaned_data['enabled_services']
+
+    def clean(self):
+        """Clean the form.
+
+        This will clean the form, handling any fields that need cleaned
+        that depend on the cleaned data of other fields.
+
+        Raises:
+            django.core.exceptions.ValidationError:
+                Raised if an unknown service or disabled service is set to be
+                the default.
+        """
+        cleaned_data = super(AvatarServicesForm, self).clean()
+
+        enabled_services = set(cleaned_data['enabled_services'])
+        service_id = cleaned_data['default_service']
+
+        if service_id == 'none':
+            default_service = None
+        else:
+            if not avatar_services.has_service(service_id):
+                raise ValidationError('Unknown service "%s".' % service_id)
+            elif service_id not in enabled_services:
+                raise ValidationError('Cannot set disabled service "%s" to '
+                                      'default.'
+                                      % service_id)
+
+            default_service = avatar_services.get('avatar_service_id',
+                                                  service_id)
+
+        cleaned_data['default_service'] = default_service
+
+        return cleaned_data
+
+    def save(self):
+        """Save the enabled services and default service to the database."""
+        avatar_services.set_enabled_services(
+            [
+                avatar_services.get('avatar_service_id', service_id)
+                for service_id in self.cleaned_data['enabled_services']
+            ],
+            save=False)
+
+        avatar_services.set_default_service(
+            self.cleaned_data['default_service'],
+            save=False)
+
+        avatar_services.avatars_enabled = self.cleaned_data['avatars_enabled']
+        avatar_services.save()
+
+    class Meta:
+        title = _('Avatar Services')
+        fieldsets = (
+            {
+                'fields': ('avatars_enabled', 'default_service',
+                           'enabled_services'),
+            },
+        )
+
+
 class EMailSettingsForm(SiteSettingsForm):
     """E-mail settings for Review Board."""
 
+    FROM_SPOOFING_CHOICES = (
+        (EmailMessage.FROM_SPOOFING_SMART,
+         _('Auto (when allowed by DMARC record)')),
+        (EmailMessage.FROM_SPOOFING_ALWAYS, _('Always')),
+        (EmailMessage.FROM_SPOOFING_NEVER, _('Never')),
+    )
+
     mail_send_review_mail = forms.BooleanField(
-        label=_("Send e-mails for review requests and reviews"),
+        label=_('Send e-mails for review requests and reviews'),
         required=False)
     mail_send_review_close_mail = forms.BooleanField(
-        label=_("Send e-mails when review requests are closed"),
+        label=_('Send e-mails when review requests are closed'),
         required=False)
     mail_send_new_user_mail = forms.BooleanField(
-        label=_("Send e-mails when new users register an account"),
+        label=_('Send e-mails to administrators when new users register '
+                'accounts'),
+        required=False)
+    mail_send_password_changed_mail = forms.BooleanField(
+        label=_('Send e-mails to users when they change their password'),
         required=False)
     mail_enable_autogenerated_header = forms.BooleanField(
         label=_('Enable "Auto-Submitted: auto-generated" header'),
@@ -494,31 +658,43 @@ class EMailSettingsForm(SiteSettingsForm):
                     '"auto-generated" e-mails.'),
         required=False)
     mail_default_from = forms.CharField(
-        label=_("Sender e-mail address"),
+        label=_('Default From address'),
         help_text=_('The e-mail address that all e-mails will be sent from. '
                     'The "Sender" header will be used to make e-mails appear '
                     'to come from the user triggering the e-mail.'),
         required=False,
         widget=forms.TextInput(attrs={'size': '50'}))
+    mail_from_spoofing = forms.ChoiceField(
+        label=_("Use the user's From address"),
+        choices=FROM_SPOOFING_CHOICES,
+        required=False,
+        help_text=_('Depending on the sender domain\'s DKIM/SPF '
+                    'configuration, e-mails may be marked as suspicious when '
+                    'sending from the user\'s own e-mail address. '
+                    '<strong>Auto</strong> will check the domain\'s DMARC '
+                    'record before using their address, falling back to the '
+                    '"Default From address" above. <strong>Always</strong> '
+                    'will use it unconditionally. <strong>Never</strong> will '
+                    'use the default address for every e-mail.'))
     mail_host = forms.CharField(
-        label=_("Mail Server"),
+        label=_('Mail server'),
         required=False,
         widget=forms.TextInput(attrs={'size': '50'}))
     mail_port = forms.IntegerField(
-        label=_("Port"),
+        label=_('Port'),
         required=False,
         widget=forms.TextInput(attrs={'size': '5'}))
     mail_host_user = forms.CharField(
-        label=_("Username"),
+        label=_('Username'),
         required=False,
         widget=forms.TextInput(attrs={'size': '30', 'autocomplete': 'off'}))
     mail_host_password = forms.CharField(
         widget=forms.PasswordInput(attrs={'size': '30', 'autocomplete': 'off'},
                                    render_value=True),
-        label=_("Password"),
+        label=_('Password'),
         required=False)
     mail_use_tls = forms.BooleanField(
-        label=_("Use TLS for authentication"),
+        label=_('Use TLS for authentication'),
         required=False)
 
     send_test_mail = forms.BooleanField(
@@ -550,12 +726,18 @@ class EMailSettingsForm(SiteSettingsForm):
             else:
                 to_user = siteconfig.get('site_admin_email')
 
-            send_mail(_('E-mail settings test'),
-                      _('This is a test of the e-mail settings for the Review '
-                        'Board server at %s.') % site_url,
-                      siteconfig.get('mail_default_from'),
-                      [to_user],
-                      fail_silently=True)
+            try:
+                send_mail(ugettext('E-mail settings test'),
+                          ugettext('This is a test of the e-mail settings '
+                                   'for the Review Board server at %s.')
+                          % site_url,
+                          siteconfig.get('mail_default_from'),
+                          [to_user],
+                          fail_silently=False)
+            except:
+                messages.error(self.request,
+                               ugettext('Failed to send test e-mail.'))
+                logging.exception('Failed to send test e-mail.')
 
     class Meta:
         title = _("E-Mail Settings")
@@ -567,12 +749,14 @@ class EMailSettingsForm(SiteSettingsForm):
                 'title': _('E-Mail Notification Settings'),
                 'fields': ('mail_send_review_mail',
                            'mail_send_review_close_mail',
-                           'mail_send_new_user_mail'),
+                           'mail_send_new_user_mail',
+                           'mail_send_password_changed_mail'),
             },
             {
                 'classes': ('wide',),
                 'title': _('E-Mail Delivery Settings'),
                 'fields': ('mail_default_from',
+                           'mail_from_spoofing',
                            'mail_enable_autogenerated_header'),
             },
             {
@@ -731,14 +915,14 @@ class LoggingSettingsForm(SiteSettingsForm):
         logging_dir = self.cleaned_data['logging_directory']
 
         if not os.path.exists(logging_dir):
-            raise ValidationError(_("This path does not exist."))
+            raise ValidationError(ugettext("This path does not exist."))
 
         if not os.path.isdir(logging_dir):
-            raise ValidationError(_("This is not a directory."))
+            raise ValidationError(ugettext("This is not a directory."))
 
         if not os.access(logging_dir, os.W_OK):
             raise ValidationError(
-                _("This path is not writable by the web server."))
+                ugettext("This path is not writable by the web server."))
 
         return logging_dir
 
@@ -766,6 +950,67 @@ class LoggingSettingsForm(SiteSettingsForm):
         )
 
 
+class PrivacySettingsForm(SiteSettingsForm):
+    """Site-wide user privacy settings for Review Board."""
+
+    terms_of_service_url = forms.URLField(
+        label=_('Terms of service URL'),
+        required=False,
+        help_text=_('URL to your terms of service. This will be displayed on '
+                    'the My Account page and during login and registration.'),
+        widget=forms.widgets.URLInput(attrs={
+            'size': 80,
+        }))
+
+    privacy_policy_url = forms.URLField(
+        label=_('Privacy policy URL'),
+        required=False,
+        help_text=_('URL to your privacy policy. This will be displayed on '
+                    'the My Account page and during login and registration.'),
+        widget=forms.widgets.URLInput(attrs={
+            'size': 80,
+        }))
+
+    privacy_info_html = forms.CharField(
+        label=_('Privacy information'),
+        required=False,
+        help_text=_('A description of the privacy guarantees for users on '
+                    'this server. This will be displayed on the My Account '
+                    '-> Your Privacy page. HTML is allowed.'),
+        widget=forms.widgets.Textarea(attrs={
+            'cols': 60,
+        }))
+
+    privacy_enable_user_consent = forms.BooleanField(
+        label=_('Require consent for usage of personal information'),
+        required=False,
+        help_text=_('Require consent from users when using their personally '
+                    'identifiable information (usernames, e-mail addresses, '
+                    'etc.) for when talking to third-party services, like '
+                    'Gravatar. This is required for EU GDPR compliance.'))
+
+    def save(self):
+        """Save the privacy settings form."""
+        self.siteconfig.set(AvatarServiceRegistry.ENABLE_CONSENT_CHECKS,
+                            self.cleaned_data['privacy_enable_user_consent'])
+
+        super(PrivacySettingsForm, self).save()
+
+    class Meta:
+        title = _('User Privacy Settings')
+        fieldsets = (
+            {
+                'classes': ('wide',),
+                'fields': (
+                    'terms_of_service_url',
+                    'privacy_policy_url',
+                    'privacy_info_html',
+                    'privacy_enable_user_consent',
+                ),
+            },
+        )
+
+
 class SSHSettingsForm(forms.Form):
     """SSH key settings for Review Board."""
 
@@ -786,12 +1031,12 @@ class SSHSettingsForm(forms.Form):
                 SSHClient().generate_user_key()
             except IOError as e:
                 self.errors['generate_key'] = forms.util.ErrorList([
-                    _('Unable to write SSH key file: %s') % e
+                    ugettext('Unable to write SSH key file: %s') % e
                 ])
                 raise
             except Exception as e:
                 self.errors['generate_key'] = forms.util.ErrorList([
-                    _('Error generating SSH key: %s') % e
+                    ugettext('Error generating SSH key: %s') % e
                 ])
                 raise
         elif self.cleaned_data['keyfile']:
@@ -799,12 +1044,12 @@ class SSHSettingsForm(forms.Form):
                 SSHClient().import_user_key(files['keyfile'])
             except IOError as e:
                 self.errors['keyfile'] = forms.util.ErrorList([
-                    _('Unable to write SSH key file: %s') % e
+                    ugettext('Unable to write SSH key file: %s') % e
                 ])
                 raise
             except Exception as e:
                 self.errors['keyfile'] = forms.util.ErrorList([
-                    _('Error uploading SSH key: %s') % e
+                    ugettext('Error uploading SSH key: %s') % e
                 ])
                 raise
 
@@ -819,7 +1064,7 @@ class SSHSettingsForm(forms.Form):
                 SSHClient().delete_user_key()
             except Exception as e:
                 self.errors['delete_key'] = forms.util.ErrorList([
-                    _('Unable to delete SSH key file: %s') % e
+                    ugettext('Unable to delete SSH key file: %s') % e
                 ])
                 raise
 
@@ -1073,3 +1318,153 @@ class SupportSettingsForm(SiteSettingsForm):
             'fields': ('install_key', 'support_url',
                        'send_support_usage_stats'),
         },)
+
+
+class SearchSettingsForm(SiteSettingsForm):
+    """Form for search settings.
+
+    This form manages the main search settings (enabled, how many results, and
+    what backend to use), as well as displaying per-search backend forms so
+    that they may be configured.
+
+    For example, Elasticsearch requires a URL and index name, while Whoosh
+    requires a file path to store its index. These fields (and fields for any
+    other added search backend) will only be shown to the user when the
+    appropriate search backend is selected.
+    """
+
+    search_enable = forms.BooleanField(
+        label=_('Enable search'),
+        help_text=_('If enabled, provides a search field for quickly '
+                    'searching through review requests, diffs, and users.'),
+        required=False)
+
+    search_results_per_page = forms.IntegerField(
+        label=_('Search results per page'),
+        min_value=1,
+        required=False)
+
+    search_backend_id = forms.ChoiceField(
+        label=_('Search backend'),
+        required=False)
+
+    search_on_the_fly_indexing = forms.BooleanField(
+        label=_('On-the-fly indexing'),
+        required=False,
+        help_text=('If enabled, the search index will be updated dynamically '
+                   'when review requests or users change.<br>'
+                   '<strong>Note:</strong> This is not recommended for use '
+                   'with the Whoosh engine for large or multi-server '
+                   'installs.'))
+
+    def __init__(self, siteconfig, data=None, *args, **kwargs):
+        """Initialize the search engine settings form.
+
+        This will also initialize the settings forms for each search engine
+        backend.
+
+        Args:
+            site_config (djblets.siteconfig.models.SiteConfiguration):
+                The site configuration instance.
+
+            data (dict, optional):
+                The form data.
+
+            *args (tuple):
+                Additional positional arguments.
+
+            **kwargs (dict):
+                Additional keyword arguments.
+        """
+        super(SearchSettingsForm, self).__init__(siteconfig, data, *args,
+                                                 **kwargs)
+        form_kwargs = {
+            'files': kwargs.get('files'),
+            'request': kwargs.get('request'),
+        }
+
+        self.search_backend_forms = {
+            backend.search_backend_id: backend.get_config_form(data,
+                                                               **form_kwargs)
+            for backend in search_backend_registry
+        }
+
+        self.fields['search_backend_id'].choices = [
+            (backend.search_backend_id, backend.name)
+            for backend in search_backend_registry
+        ]
+
+    def clean_search_backend_id(self):
+        """Clean the ``search_backend_id`` field.
+
+        This will ensure the chosen search backend is valid (i.e., it is
+        available in the registry) and that its dependencies have been
+        installed.
+
+        Returns:
+            unicode:
+            The search backend ID.
+
+        Raises:
+            django.core.exceptions.ValidationError:
+                Raised if the search engine ID chosen cannot be used.
+        """
+        search_backend_id = self.cleaned_data['search_backend_id']
+        search_backend = search_backend_registry.get_search_backend(
+            search_backend_id)
+
+        if not search_backend:
+            raise ValidationError(
+                ugettext('The search engine "%s" could not be found. '
+                         'If this is provided by an extension, you will have '
+                         'to make sure that extension is enabled.')
+                % search_backend_id
+            )
+
+        search_backend.validate()
+
+        return search_backend_id
+
+    def clean(self):
+        """Clean the form and the sub-form for the selected search backend.
+
+        Returns:
+            dict:
+            The cleaned data.
+        """
+        if self.cleaned_data['search_enable']:
+            search_backend_id = self.cleaned_data.get('search_backend_id')
+
+            # The search_backend_id field is only available if the backend
+            # passed validation.
+            if search_backend_id:
+                backend_form = self.search_backend_forms[search_backend_id]
+
+                if not backend_form.is_valid():
+                    self._errors.update(backend_form.errors)
+
+        return self.cleaned_data
+
+    def save(self):
+        """Save the form and sub-form for the selected search backend.
+
+        This forces a site configuration reload.
+        """
+        search_backend_id = self.cleaned_data['search_backend_id']
+
+        if self.cleaned_data['search_enable']:
+            # We only need to update the backend settings when search is
+            # enabled.
+            backend_form = self.search_backend_forms[search_backend_id]
+            backend = search_backend_registry.get_search_backend(
+                search_backend_id)
+            backend.configuration = backend.get_configuration_from_form_data(
+                backend_form.cleaned_data)
+
+        super(SearchSettingsForm, self).save()
+
+        # Reload any import changes to the Django settings.
+        load_site_config()
+
+    class Meta:
+        title = _('Search Settings')

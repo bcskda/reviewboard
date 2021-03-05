@@ -2,7 +2,6 @@ from __future__ import unicode_literals
 
 from django.contrib.auth.models import AnonymousUser
 from django.db.models import Q
-from djblets.util.templatetags.djblets_utils import user_displayname
 from haystack import indexes
 
 from reviewboard.reviews.models import ReviewRequest
@@ -20,10 +19,10 @@ class ReviewRequestIndex(BaseSearchIndex, indexes.Indexable):
     summary = indexes.CharField(model_attr='summary')
     description = indexes.CharField(model_attr='description')
     testing_done = indexes.CharField(model_attr='testing_done')
+    commit_id = indexes.EdgeNgramField(model_attr='commit', null=True)
     bug = indexes.CharField(model_attr='bugs_closed')
     username = indexes.CharField(model_attr='submitter__username')
-    user_display_name = indexes.CharField()
-    author = indexes.CharField(model_attr='submitter__get_full_name')
+    author = indexes.CharField()
     last_updated = indexes.DateTimeField(model_attr='last_updated')
     url = indexes.CharField(model_attr='get_absolute_url')
     file = indexes.CharField()
@@ -44,16 +43,21 @@ class ReviewRequestIndex(BaseSearchIndex, indexes.Indexable):
 
     def index_queryset(self, using=None):
         """Index only public pending and submitted review requests."""
-        queryset = self.get_model().objects.public(
-            status=None,
-            extra_query=Q(status='P') | Q(status='S'),
-            show_all_local_sites=True,
-            filter_private=False)
-        queryset = queryset.select_related('submitter', 'diffset_history')
-        queryset = queryset.prefetch_related(
-            'diffset_history__diffsets__files')
-
-        return queryset
+        return (
+            self.get_model().objects
+            .public(status=None,
+                    show_all_local_sites=True,
+                    show_inactive=True,
+                    filter_private=False)
+            .select_related('diffset_history',
+                            'local_site',
+                            'repository',
+                            'submitter',
+                            'submitter__profile')
+            .prefetch_related('diffset_history__diffsets__files',
+                              'target_groups',
+                              'target_people')
+        )
 
     def prepare_file(self, obj):
         return set([
@@ -88,9 +92,11 @@ class ReviewRequestIndex(BaseSearchIndex, indexes.Indexable):
         returned. This allows queries to be performed that check that none
         of the groups are private, since we can't query against empty lists.
         """
-        queryset = review_request.target_groups.filter(invite_only=True)
-
-        return list(queryset.values_list('pk', flat=True)) or [0]
+        return [
+            group.pk
+            for group in review_request.target_groups.all()
+            if group.invite_only
+        ] or [0]
 
     def prepare_target_users(self, review_request):
         """Prepare the list of target users for the index.
@@ -99,9 +105,28 @@ class ReviewRequestIndex(BaseSearchIndex, indexes.Indexable):
         allows queries to be performed that check that there aren't any
         users in the list, since we can't query against empty lists.
         """
-        pks = list(review_request.target_people.values_list('pk', flat=True))
+        return [
+            user.pk
+            for user in review_request.target_people.all()
+        ] or [0]
 
-        return pks or [0]
+    def prepare_author(self, review_request):
+        """Prepare the author field.
 
-    def prepare_user_display_name(self, obj):
-        return user_displayname(obj.submitter)
+        Args:
+            review_request (reviewboard.reviews.models.review_request.
+                            ReviewRequest):
+                The review request being indexed.
+
+        Returns:
+            unicode:
+            Either the author's full name (if their profile is public) or an
+            empty string.
+        """
+        user = review_request.submitter
+        profile = user.get_profile(cached_only=True)
+
+        if profile is None or profile.is_private:
+            return ''
+
+        return user.get_full_name()

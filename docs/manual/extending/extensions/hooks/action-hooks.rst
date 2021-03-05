@@ -1,4 +1,5 @@
 .. _action-hooks:
+.. _action-hook:
 
 ============
 Action Hooks

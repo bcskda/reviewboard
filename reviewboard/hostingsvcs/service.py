@@ -1,31 +1,94 @@
+"""The base hosting service class and associated definitions."""
+
 from __future__ import unicode_literals
 
 import base64
+import hashlib
 import json
 import logging
 import mimetools
+import re
+import ssl
 
-from django.conf.urls import include, patterns, url
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from django.conf.urls import include, url
 from django.dispatch import receiver
 from django.utils import six
+from django.utils.six.moves.urllib.error import URLError
 from django.utils.six.moves.urllib.parse import urlparse
 from django.utils.six.moves.urllib.request import (Request as BaseURLRequest,
                                                    HTTPBasicAuthHandler,
                                                    urlopen)
 from django.utils.translation import ugettext_lazy as _
-from pkg_resources import iter_entry_points
+from djblets.registries.errors import ItemLookupError
+from djblets.registries.registry import (ALREADY_REGISTERED, LOAD_ENTRY_POINT,
+                                         NOT_REGISTERED)
 
 import reviewboard.hostingsvcs.urls as hostingsvcs_urls
+from reviewboard.registries.registry import EntryPointRegistry
+from reviewboard.scmtools.certs import Certificate
+from reviewboard.scmtools.errors import UnverifiedCertificateError
 from reviewboard.signals import initializing
 
 
 class URLRequest(BaseURLRequest):
-    def __init__(self, url, body='', headers={}, method='GET'):
-        BaseURLRequest.__init__(self, url, body, headers)
+    """A request that can use any HTTP method.
+
+    By default, the :py:class:`urllib2.Request` class only supports HTTP GET
+    and HTTP POST methods. This subclass allows for any HTTP method to be
+    specified for the request.
+    """
+
+    def __init__(self, url, body='', headers=None, method='GET'):
+        """Initialize the URLRequest.
+
+        Args:
+            url (unicode):
+                The URL to make the request against.
+
+            body (unicode or bytes):
+                The content of the request.
+
+            headers (dict, optional):
+                Additional headers to attach to the request.
+
+            method (unicode, optional):
+                The request method. If not provided, it defaults to a ``GET``
+                request.
+        """
+        # Request is an old-style class and therefore we cannot use super().
+        BaseURLRequest.__init__(self, url, body, headers or {})
         self.method = method
 
     def get_method(self):
+        """Return the HTTP method of the request.
+
+        Returns:
+            unicode:
+            The HTTP method of the request.
+        """
         return self.method
+
+    def add_basic_auth(self, username, password):
+        """Add HTTP Basic Authentication headers to the request.
+
+        Args:
+            username (unicode or bytes):
+                The username.
+
+            password (unicode or bytes):
+                The password.
+        """
+        if isinstance(username, six.text_type):
+            username = username.encode('utf-8')
+
+        if isinstance(password, six.text_type):
+            password = password.encode('utf-8')
+
+        auth = b'%s:%s' % (username, password)
+        self.add_header(HTTPBasicAuthHandler.auth_header,
+                        b'Basic %s' % base64.b64encode(auth))
 
 
 class HostingServiceClient(object):
@@ -38,30 +101,149 @@ class HostingServiceClient(object):
     additional checking (such as GitHub's checking of rate limit headers), or
     add higher-level API functionality.
     """
+
     def __init__(self, hosting_service):
-        pass
+        """Initialize the client.
+
+        This method is a no-op. Subclasses requiring access to the hosting
+        service or account should override this method.
+
+        Args:
+            hosting_service (HostingService):
+                The hosting service that is using this client.
+        """
+        self.hosting_service = hosting_service
 
     #
     # HTTP utility methods
     #
 
-    def http_delete(self, url, headers={}, *args, **kwargs):
-        """Perform an HTTP DELETE on the given URL."""
+    def http_delete(self, url, headers=None, *args, **kwargs):
+        """Perform an HTTP DELETE on the given URL.
+
+        Args:
+            url (unicode):
+                The URL to perform the request on.
+
+            headers (dict, optional):
+                Extra headers to include with the request.
+
+            *args (tuple):
+                Additional positional arguments to pass to
+                :py:meth:`http_request`.
+
+            **kwargs (dict):
+                Additional keyword arguments to pass to
+                :py:meth:`http_request`.
+
+        Returns:
+            tuple:
+            A tuple of:
+
+            * The response body (:py:class:`bytes`).
+            * The response headers (:py:class:`dict`).
+
+        Raises:
+            urllib2.HTTPError:
+                When the HTTP request fails.
+
+            urllib2.URLError:
+                When there is an error communicating with the URL.
+        """
         return self.http_request(url, headers=headers, method='DELETE',
                                  **kwargs)
 
-    def http_get(self, url, *args, **kwargs):
-        """Perform an HTTP GET on the given URL."""
-        return self.http_request(url, method='GET', **kwargs)
+    def http_get(self, url, headers=None, *args, **kwargs):
+        """Perform an HTTP GET on the given URL.
 
-    def http_post(self, url, body=None, fields={}, files={}, content_type=None,
-                  headers={}, *args, **kwargs):
-        """Perform an HTTP POST on the given URL."""
-        headers = headers.copy()
+        Args:
+            url (unicode):
+                The URL to perform the request on.
+
+            headers (dict, optional):
+                Extra headers to include with the request.
+
+            *args (tuple):
+                Additional positional arguments to pass to
+                :py:meth:`http_request`.
+
+            **kwargs (dict):
+                Additional keyword arguments to pass to
+                :py:meth:`http_request`.
+
+        Returns:
+            tuple:
+            A tuple of:
+
+            * The response body (:py:class:`bytes`)
+            * The response headers (:py:class:`dict`)
+
+        Raises:
+            urllib2.HTTPError:
+                When the HTTP request fails.
+
+            urllib2.URLError:
+                When there is an error communicating with the URL.
+        """
+        return self.http_request(url, headers=headers, method='GET', **kwargs)
+
+    def http_post(self, url, body=None, fields=None, files=None,
+                  content_type=None, headers=None, *args, **kwargs):
+        """Perform an HTTP POST on the given URL.
+
+        Args:
+            url (unicode):
+                The URL to perform the request on.
+
+            body (unicode, optional):
+                The request body. if not provided, it will be generated from
+                the ``fields`` and ``files`` arguments.
+
+            fields (dict, optional):
+                Form fields to use to generate the request body. This argument
+                will only be used if ``body`` is ``None``.
+
+            files (dict, optional):
+                Files to use to generate the request body. This argument will
+                only be used if ``body`` is ``None``.
+
+            content_type (unicode, optional):
+                The content type of the request. If provided, it will be
+                appended as the :mailheader:`Content-Type` header.
+
+            headers (dict, optional):
+                Extra headers to include with the request.
+
+            *args (tuple):
+                Additional positional arguments to pass to
+                :py:meth:`http_request`.
+
+            **kwargs (dict):
+                Additional keyword arguments to pass to
+                :py:meth:`http_request`.
+
+        Returns:
+            tuple:
+            A tuple of:
+
+            * The response body (:py:class:`bytes`)
+            * The response headers (:py:class:`dict`)
+
+        Raises:
+            urllib2.HTTPError:
+                When the HTTP request fails.
+
+            urllib2.URLError:
+                When there is an error communicating with the URL.
+        """
+        if headers:
+            headers = headers.copy()
+        else:
+            headers = {}
 
         if body is None:
             if fields is not None:
-                body, content_type = self._build_form_data(fields, files)
+                body, content_type = self.build_form_data(fields, files)
             else:
                 body = ''
 
@@ -73,31 +255,211 @@ class HostingServiceClient(object):
         return self.http_request(url, body=body, headers=headers,
                                  method='POST', **kwargs)
 
-    def http_request(self, url, body=None, headers={}, method='GET', **kwargs):
-        """Perform some HTTP operation on a given URL."""
-        r = self._build_request(url, body, headers, method=method, **kwargs)
-        u = urlopen(r)
+    def http_request(self, url, body=None, headers=None, method='GET',
+                     username=None, password=None):
+        """Perform some HTTP operation on a given URL.
 
-        return u.read(), u.headers
+        If the ``username`` and ``password`` arguments are provided, the
+        headers required for HTTP Basic Authentication will be added to
+        the request.
+
+        Args:
+            url (unicode):
+                The URL to open.
+
+            body (unicode, optional):
+                The request body.
+
+            headers (dict, optional):
+                Headers to include in the request.
+
+            method (unicode, optional):
+                The HTTP method to use to perform the request.
+
+            username (unicode, optional):
+                The username to use for HTTP Basic Authentication.
+
+            password (unicode, optional):
+                The password to use for HTTP Basic Authentication.
+
+        Returns:
+            tuple:
+            A tuple of:
+
+            * The response body (:py:class:`bytes`)
+            * The response headers (:py:class:`dict`)
+
+        Raises:
+            urllib2.HTTPError:
+                When the HTTP request fails.
+
+            urllib2.URLError:
+                When there is an error communicating with the URL.
+        """
+        request = URLRequest(url, body, headers, method=method)
+
+        if username is not None and password is not None:
+            request.add_basic_auth(username, password)
+
+        try:
+            if (self.hosting_service and
+                'ssl_cert' in self.hosting_service.account.data):
+                # create_default_context only exists in Python 2.7.9+. Using it
+                # here should be fine, however, because accepting invalid or
+                # self-signed certificates is only possible when running
+                # against versions that have this (see the check for
+                # create_default_context below).
+                context = ssl.create_default_context()
+                context.load_verify_locations(
+                    cadata=self.hosting_service.account.data['ssl_cert'])
+                context.check_hostname = False
+            else:
+                context = None
+
+            response = urlopen(request, context=context)
+            return response.read(), response.headers
+        except URLError as e:
+            if ('CERTIFICATE_VERIFY_FAILED' not in six.text_type(e) or
+                not hasattr(ssl, 'create_default_context')):
+                raise
+
+            parts = urlparse(url)
+            port = parts.port or 443
+
+            cert_pem = ssl.get_server_certificate((parts.hostname, port))
+            cert_der = ssl.PEM_cert_to_DER_cert(cert_pem)
+
+            cert = x509.load_pem_x509_certificate(cert_pem.encode('ascii'),
+                                                  default_backend())
+            issuer = cert.issuer.get_attributes_for_oid(
+                x509.oid.NameOID.COMMON_NAME)[0].value
+            subject = cert.subject.get_attributes_for_oid(
+                x509.oid.NameOID.COMMON_NAME)[0].value
+
+            raise UnverifiedCertificateError(
+                Certificate(
+                    pem_data=cert_pem,
+                    valid_from=cert.not_valid_before.isoformat(),
+                    valid_until=cert.not_valid_after.isoformat(),
+                    issuer=issuer,
+                    hostname=subject,
+                    fingerprint=hashlib.sha256(cert_der).hexdigest()))
 
     #
     # JSON utility methods
     #
 
     def json_delete(self, *args, **kwargs):
-        """Perform an HTTP DELETE and interpret the results as JSON."""
+        """Perform an HTTP DELETE and interpret the results as JSON.
+
+        Args:
+            *args (tuple):
+                Additional positional arguments to pass to
+                :py:meth:`http_delete`.
+
+            **kwargs (dict):
+                Additional keyword arguments to pass to
+                :py:meth:`http_delete`.
+
+        Returns:
+            tuple:
+            A tuple of:
+
+            * The JSON data (in the appropriate type)
+            * The response headers (:py:class:`dict`)
+
+        Raises:
+            urllib2.HTTPError:
+                When the HTTP request fails.
+
+            urllib2.URLError:
+                When there is an error communicating with the URL.
+        """
         return self._do_json_method(self.http_delete, *args, **kwargs)
 
     def json_get(self, *args, **kwargs):
-        """Perform an HTTP GET and interpret the results as JSON."""
+        """Perform an HTTP GET and interpret the results as JSON.
+
+        Args:
+            *args (tuple):
+                Additional positional arguments to pass to
+                :py:meth:`http_get`.
+
+            **kwargs (dict):
+                Additional keyword arguments to pass to
+                :py:meth:`http_get`.
+
+        Returns:
+            tuple:
+            A tuple of:
+
+            * The JSON data (in the appropriate type)
+            * The response headers (:py:class:`dict`)
+
+        Raises:
+            urllib2.HTTPError:
+                When the HTTP request fails.
+
+            urllib2.URLError:
+                When there is an error communicating with the URL.
+        """
         return self._do_json_method(self.http_get, *args, **kwargs)
 
     def json_post(self, *args, **kwargs):
-        """Perform an HTTP POST and interpret the results as JSON."""
+        """Perform an HTTP POST and interpret the results as JSON.
+
+        Args:
+            *args (tuple):
+                Additional positional arguments to pass to
+                :py:meth:`http_post`.
+
+            **kwargs (dict):
+                Additional keyword arguments to pass to
+                :py:meth:`http_post`.
+
+        Returns:
+            tuple:
+            A tuple of:
+
+            * The JSON data (in the appropriate type)
+            * The response headers (:py:class:`dict`)
+
+        Raises:
+            urllib2.HTTPError:
+                When the HTTP request fails.
+
+            urllib2.URLError:
+                When there is an error communicating with the URL.
+        """
         return self._do_json_method(self.http_post, *args, **kwargs)
 
     def _do_json_method(self, method, *args, **kwargs):
-        """Internal helper for JSON operations."""
+        """Parse the result of an HTTP operation as JSON.
+
+        Args:
+            method (callable):
+                The callable to use to execute the request.
+
+            *args (tuple):
+                Positional arguments to pass to ``method``.
+
+            **kwargs (dict):
+                Keyword arguments to pass to ``method``.
+
+        Returns:
+            tuple:
+            A tuple of:
+
+            * The JSON data (in the appropriate type)
+            * The response headers (:py:class:`dict`)
+
+        Raises:
+            urllib2.HTTPError:
+                When the HTTP request fails.
+
+            urllib2.URLError:
+                When there is an error communicating with the URL.
+        """
         data, headers = method(*args, **kwargs)
 
         if data:
@@ -109,45 +471,93 @@ class HostingServiceClient(object):
     # Internal utilities
     #
 
-    def _build_request(self, url, body=None, headers={}, username=None,
-                       password=None, method='GET'):
-        """Build a URLRequest object, including HTTP Basic auth"""
-        r = URLRequest(url, body, headers, method=method)
+    @staticmethod
+    def build_form_data(fields, files=None):
+        """Encode data for use in an HTTP POST.
 
-        if username is not None and password is not None:
-            auth_key = username + ':' + password
-            r.add_header(HTTPBasicAuthHandler.auth_header,
-                         'Basic %s' %
-                         base64.b64encode(auth_key.encode('utf-8')))
+        Args:
+            fields (dict):
+                A mapping of field names (:py:class:`unicode`) to values.
 
-        return r
+            files (dict, optional):
+                A mapping of field names (:py:class:`unicode`) to files
+                (:py:class:`dict`).
 
-    def _build_form_data(self, fields, files):
-        """Encodes data for use in an HTTP POST."""
-        BOUNDARY = mimetools.choose_boundary()
-        content = ""
+        Returns:
+            tuple:
+            A tuple of:
 
-        for key in fields:
-            content += "--" + BOUNDARY + "\r\n"
-            content += "Content-Disposition: form-data; name=\"%s\"\r\n" % key
-            content += "\r\n"
-            content += six.text_type(fields[key]) + "\r\n"
+            * The request content (:py:class:`unicode`).
+            * The request content type (:py:class:`unicode`).
+        """
+        boundary = HostingServiceClient._make_form_data_boundary()
+        content_parts = []
 
-        for key in files:
-            filename = files[key]['filename']
-            value = files[key]['content']
-            content += "--" + BOUNDARY + "\r\n"
-            content += "Content-Disposition: form-data; name=\"%s\"; " % key
-            content += "filename=\"%s\"\r\n" % filename
-            content += "\r\n"
-            content += value + "\r\n"
+        for key, value in sorted(six.iteritems(fields),
+                                 key=lambda pair: pair[0]):
+            if isinstance(key, six.text_type):
+                key = key.encode('utf-8')
 
-        content += "--" + BOUNDARY + "--\r\n"
-        content += "\r\n"
+            if isinstance(value, six.text_type):
+                value = value.encode('utf-8')
 
-        content_type = "multipart/form-data; boundary=%s" % BOUNDARY
+            content_parts.append(
+                b'--%(boundary)s\r\n'
+                b'Content-Disposition: form-data; name="%(key)s"\r\n'
+                b'\r\n'
+                b'%(value)s\r\n'
+                % {
+                    'boundary': boundary,
+                    'key': key,
+                    'value': value,
+                }
+            )
+
+        if files:
+            for key, data in sorted(six.iteritems(files),
+                                    key=lambda pair: pair[0]['filename']):
+                filename = data['filename']
+                content = data['content']
+
+                if isinstance(key, six.text_type):
+                    key = key.encode('utf-8')
+
+                if isinstance(filename, six.text_type):
+                    filename = filename.encode('utf-8')
+
+                if isinstance(content, six.text_type):
+                    content = content.encode('utf-8')
+
+                content_parts.append(
+                    b'--%(boundary)s\r\n'
+                    b'Content-Disposition: form-data; name="%(key)s";'
+                    b' filename="%(filename)s"\r\n'
+                    b'\r\n'
+                    b'%(value)s\r\n'
+                    % {
+                        'boundary': boundary,
+                        'key': key,
+                        'filename': filename,
+                        'value': content,
+                    }
+                )
+
+        content_parts.append(b'--%s--' % boundary)
+
+        content = b''.join(content_parts)
+        content_type = b'multipart/form-data; boundary=%s' % boundary
 
         return content, content_type
+
+    @staticmethod
+    def _make_form_data_boundary():
+        """Return a unique boundary to use for HTTP form data.
+
+        Returns:
+            bytes:
+            The boundary for use in the form data.
+        """
+        return mimetools.choose_boundary()
 
 
 class HostingService(object):
@@ -165,6 +575,18 @@ class HostingService(object):
     service), along with configuration specific to the plan. These plans will
     be available when configuring the repository.
     """
+
+    #: The unique ID of the hosting service.
+    #:
+    #: This should be lowercase, and only consist of the characters a-z, 0-9,
+    #: ``_``, and ``-``.
+    #:
+    #: Version Added:
+    #:     3.0.16:
+    #:     This should now be set on all custom hosting services. It will be
+    #:     required in Review Board 4.0.
+    hosting_service_id = None
+
     name = None
     plans = None
     supports_bug_trackers = False
@@ -174,6 +596,17 @@ class HostingService(object):
     supports_two_factor_auth = False
     supports_list_remote_repositories = False
     has_repository_hook_instructions = False
+
+    #: Whether this service should be shown as an available option.
+    #:
+    #: This should be set to ``False`` when a service is no longer available
+    #: to use, and should be hidden from repository configuration. The
+    #: implementation can then be largely stubbed out. Users will see a
+    #: message in the repository configuration page.
+    #:
+    #: Version Added:
+    #:     3.0.17
+    visible = True
 
     self_hosted = False
     repository_url_patterns = None
@@ -186,55 +619,124 @@ class HostingService(object):
     # These values are defaults that can be overridden in repository_plans
     # above.
     needs_authorization = False
-    supported_scmtools = []
     form = None
     fields = []
     repository_fields = {}
     bug_tracker_field = None
 
+    #: A list of SCMTools IDs or names that are supported by this service.
+    #:
+    #: This should contain a list of SCMTool IDs that this service can work
+    #: with. For backwards-compatibility, it may instead contain a list of
+    #: SCMTool names (corresponding to database registration names).
+    #:
+    #: This may also be specified per-plan in the :py:attr:`plans`.
+    #:
+    #: Version Changed:
+    #:     3.0.16:
+    #:     Added support for SCMTool IDs. A future version will deprecate
+    #:     using SCMTool names here.
+    supported_scmtools = []
+
+    #: A list of SCMTool IDs that are visible when configuring the service.
+    #:
+    #: This should contain a list of SCMTool IDs that this service will show
+    #: when configuring a repository. It can be used to offer continued
+    #: legacy support for an SCMTool without offering it when creating new
+    #: repositories. If not specified, all SCMTools listed
+    #: in :py:attr:`supported_scmtools` are assumed to be visible.
+    #:
+    #: If explicitly set, this should always be equal to or a subset of
+    #: :py:attr:`supported_scmtools`.
+    #:
+    #: This may also be specified per-plan in the :py:attr:`plans`.
+    #:
+    #: Version Added:
+    #:     3.0.17
+    visible_scmtools = None
+
     def __init__(self, account):
+        """Initialize the hosting service.
+
+        Args:
+            account (reviewboard.hostingsvcs.models.HostingServiceAccount):
+                The account to use with the service.
+        """
         assert account
         self.account = account
 
         self.client = self.client_class(self)
 
     def is_authorized(self):
-        """Returns whether or not the account is currently authorized.
+        """Return whether or not the account is currently authorized.
 
         An account may no longer be authorized if the hosting service
         switches to a new API that doesn't match the current authorization
         records. This function will determine whether the account is still
         considered authorized.
+
+        Returns:
+            bool:
+            Whether or not the associated account is authorized.
         """
         return False
 
     def get_password(self):
-        """Returns the raw password for this hosting service.
+        """Return the raw password for this hosting service.
 
         Not all hosting services provide this, and not all would need it.
         It's primarily used when building a Subversion client, or other
         SCMTools that still need direct access to the repository itself.
+
+        Returns:
+            unicode:
+            The password.
         """
         return None
 
     def is_ssh_key_associated(self, repository, key):
-        """Returns whether or not the key is associated with the repository.
+        """Return whether or not the key is associated with the repository.
 
-        If the ``key`` (an instance of :py:mod:`paramiko.PKey`) is present
-        among the hosting service's deploy keys for a given ``repository`` or
-        account, then it is considered associated. If there is a problem
-        checking with the hosting service, an :py:exc:`SSHKeyAssociationError`
-        will be raised.
+        If the given key is present amongst the hosting service's deploy keys
+        for the given repository, then it is considered to be associated.
+
+        Sub-classes should implement this when the hosting service supports
+        SSH key association.
+
+        Args:
+            repository (reviewboard.scmtools.models.Repository):
+                The repository the key must be associated with.
+
+            key (paramiko.PKey):
+                The key to check for association.
+
+        Returns:
+            bool:
+            Whether or not the key is associated with the repository.
+
+        Raises:
+            reviewboard.hostingsvcs.errors.SSHKeyAssociationError:
+                If an error occured during communication with the hosting
+                service.
         """
         raise NotImplementedError
 
     def associate_ssh_key(self, repository, key):
-        """Associates an SSH key with a given repository
+        """Associate an SSH key with a given repository.
 
-        The ``key`` (an instance of :py:mod:`paramiko.PKey`) will be added to
-        the hosting service's list of deploy keys (if possible). If there
-        is a problem uploading the key to the hosting service, a
-        :py:exc:`SSHKeyAssociationError` will be raised.
+        Sub-classes should implement this when the hosting service supports
+        SSH key association.
+
+        Args:
+            repository (reviewboard.scmtools.models.Repository):
+                The repository to associate the key with.
+
+            key (paramiko.PKey):
+                The key to add to the repository's list of deploy keys.
+
+        Raises:
+            reviewboard.hostingsvcs.errors.SSHKeyAssociationError:
+                If an error occured during key association.
         """
         raise NotImplementedError
 
@@ -296,33 +798,126 @@ class HostingService(object):
         raw credentials, as well as the SCMTool class being used, the
         LocalSite's name (if any), and all field data from the
         HostingServiceForm as keyword arguments.
+
+        Args:
+            path (unicode):
+                The repository URL.
+
+            username (unicode):
+                The username to use.
+
+            password (unicode):
+                The password to use.
+
+            scmtool_class (type):
+                The subclass of :py:class:`~reviewboard.scmtools.core.SCMTool`
+                that should be used.
+
+            local_site_name (unicode):
+                The name of the local site associated with the repository, or
+                ``None``.
+
+            *args (tuple):
+                Additional positional arguments, unique to each hosting
+                service.
+
+            **kwargs (dict):
+                Additional keyword arguments, unique to each hosting service.
+
+        Raises:
+            reviewboard.hostingsvcs.errors.RepositoryError:
+                The repository is not valid.
         """
-        return scmtool_class.check_repository(path, username, password,
-                                              local_site_name)
+        scmtool_class.check_repository(path, username, password,
+                                       local_site_name)
 
     def get_file(self, repository, path, revision, *args, **kwargs):
+        """Return the requested file.
+
+        Files can only be returned from hosting services that support
+        repositories.
+
+        Args:
+            repository (reviewboard.scmtools.models.Repository):
+                The repository to retrieve the file from.
+
+            path (unicode):
+                The file path.
+
+            revision (unicode):
+                The revision the file should be retrieved from.
+
+            *args (tuple):
+                Ignored positional arguments.
+
+            **kwargs (dict):
+                Additional keyword arguments to pass to the SCMTool.
+
+        Returns:
+            bytes:
+            The contents of the file.
+
+        Raises:
+            NotImplementedError:
+                If this hosting service does not support repositories.
+        """
         if not self.supports_repositories:
             raise NotImplementedError
 
         return repository.get_scmtool().get_file(path, revision, **kwargs)
 
     def get_file_exists(self, repository, path, revision, *args, **kwargs):
+        """Return whether or not the given path exists in the repository.
+
+        Args:
+            repository (reviewboard.scmtools.models.Repository):
+                The repository to check for file existence.
+
+            path (unicode):
+                The file path.
+
+            revision (unicode):
+                The revision to check for file existence.
+
+            *args (tuple):
+                Ignored positional arguments.
+
+            **kwargs (dict):
+                Additional keyword arguments to be passed to the SCMTool.
+
+        Returns:
+            bool:
+            Whether or not the file exists at the given revision in the
+            repository.
+
+        Raises:
+            NotImplementedError:
+                If this hosting service does not support repositories.
+        """
         if not self.supports_repositories:
             raise NotImplementedError
 
         return repository.get_scmtool().file_exists(path, revision, **kwargs)
 
     def get_branches(self, repository):
-        """Get a list of all branches in the repositories.
+        """Return a list of all branches in the repositories.
 
         This should be implemented by subclasses, and is expected to return a
         list of Branch objects. One (and only one) of those objects should have
         the "default" field set to True.
+
+        Args:
+            repository (reviewboard.scmtools.models.Repository):
+                The repository for which branches should be returned.
+
+        Returns:
+            list of reviewboard.scmtools.core.Branch:
+            The branches.
         """
         raise NotImplementedError
 
     def get_commits(self, repository, branch=None, start=None):
-        """Get a list of commits backward in history from a given point.
+        """Return a list of commits backward in history from a given point.
 
         This should be implemented by subclasses, and is expected to return a
         list of Commit objects (usually 30, but this is flexible depending on
@@ -331,56 +926,166 @@ class HostingService(object):
         This can be called multiple times in succession using the "parent"
         field of the last entry as the start parameter in order to paginate
         through the history of commits in the repository.
+
+        Args:
+            repository (reviewboard.scmtools.models.Repository):
+                The repository to retrieve commits from.
+
+            branch (unicode, optional):
+                The branch to retrieve from. If this is not provided, the
+                default branch will be used.
+
+            start (unicode, optional):
+                An optional starting revision. If this is not provided, the
+                most recent commits will be returned.
+
+        Returns:
+            list of reviewboard.scmtools.core.Commit:
+            The retrieved commits.
         """
         raise NotImplementedError
 
     def get_change(self, repository, revision):
-        """Get an individual change.
+        """Return an individual change.
 
-        This should be implemented by subclasses, and is expected to return a
-        tuple of (commit message, diff), both strings.
+        This method should be implemented by subclasses.
+
+        Args:
+            repository (reviewboard.scmtools.models.Repository):
+                The repository to get the change from.
+
+            revision (unicode):
+                The revision to retrieve.
+
+        Returns:
+            reviewboard.scmtools.core.Commit:
+            The change.
         """
         raise NotImplementedError
 
     def get_remote_repositories(self, owner=None, owner_type=None,
-                                filter_type=None, start=None, per_page=None):
-        """Get a list of remote repositories for the owner.
+                                filter_type=None, start=None, per_page=None,
+                                **kwargs):
+        """Return a list of remote repositories for the owner.
 
-        This should be implemented by subclasses, and is expected to return an
-        APIPaginator providing pages of RemoteRepository objects.
+        This method should be implemented by subclasses.
 
-        The ``start`` and ``per_page`` parameters can be used to control
-        where pagination begins and how many results are returned per page,
-        if the subclass supports it.
+        Args:
+            owner (unicode, optional):
+                The owner of the repositories. This is usually a username.
 
-        ``owner`` is expected to default to a reasonable value (typically
-        the linked account's username). The hosting service may also require
-        an ``owner_type`` value that identifies what the ``owner`` means.
-        This value is specific to the hosting service backend.
+            owner_type (unicode, optional):
+                A hosting service-specific indicator of what the owner is (such
+                as a user or a group).
 
-        Likewise, ``filter_type`` is specific to the hosting service backend.
-        If supported, it may be used to filter the types of hosting services.
+            filter_type (unicode, optional):
+                Some hosting service-specific criteria to filter by.
+
+            start (int, optional):
+                The index to start at.
+
+            per_page (int, optional):
+                The number of results per page.
+
+        Returns:
+            reviewboard.hostingsvcs.utils.APIPaginator:
+            A paginator for the returned repositories.
         """
         raise NotImplementedError
 
     def get_remote_repository(self, repository_id):
-        """Get the remote repository for the ID.
+        """Return the remote repository for the ID.
 
-        This should be implemented by subclasses, and is expected to return
-        a RemoteRepository if found, or raise ObjectDoesNotExist if not found.
+        This method should be implemented by subclasses.
+
+        Args:
+            repository_id (unicode):
+                The repository's identifier. This is unique to each hosting
+                service.
+
+        Returns:
+            reviewboard.hostingsvcs.repository.RemoteRepository:
+            The remote repository.
+
+        Raises:
+            django.core.excptions.ObjectDoesNotExist:
+                If the remote repository does not exist.
         """
         raise NotImplementedError
+
+    def normalize_patch(self, repository, patch, filename, revision):
+        """Normalize a diff/patch file before it's applied.
+
+        This can be used to take an uploaded diff file and modify it so that
+        it can be properly applied. This may, for instance, uncollapse
+        keywords or remove metadata that would confuse :command:`patch`.
+
+        By default, this passes along the normalization to the repository's
+        :py:class:`~reviewboard.scmtools.core.SCMTool`.
+
+        Args:
+            repository (reviewboard.scmtools.models.Repository):
+                The repository the patch is meant to apply to.
+
+            patch (bytes):
+                The diff/patch file to normalize.
+
+            filename (unicode):
+                The name of the file being changed in the diff.
+
+            revision (unicode):
+                The revision of the file being changed in the diff.
+
+        Returns:
+            bytes:
+            The resulting diff/patch file.
+        """
+        return repository.get_scmtool().normalize_patch(patch=patch,
+                                                        filename=filename,
+                                                        revision=revision)
+
 
     @classmethod
     def get_repository_fields(cls, username, hosting_url, plan, tool_name,
                               field_vars):
+        """Return the repository fields based on the given plan and tool.
+
+        If the ``plan`` argument is specified, that will be used to fill in
+        some tool-specific field values. Otherwise they will be retrieved from
+        the :py:class:`HostingService`'s defaults.
+
+        Args:
+            username (unicode):
+                The username.
+
+            hosting_url (unicode):
+                The URL of the repository.
+
+            plan (unicode):
+                The name of the plan.
+
+            tool_name (unicode):
+                The :py:attr:`~reviewboard.scmtools.core.SCMTool.name` of the
+                :py:class:`~reviewboard.scmtools.core.SCMTool`.
+
+            field_vars (dict):
+                The field values from the hosting service form.
+
+        Returns:
+            dict:
+            The filled in repository fields.
+
+        Raises:
+            KeyError:
+               The provided plan is not valid for the hosting service.
+        """
         if not cls.supports_repositories:
             raise NotImplementedError
 
         # Grab the list of fields for population below. We have to do this
         # differently depending on whether or not this hosting service has
         # different repository plans.
-        fields = cls._get_field(plan, 'repository_fields')
+        fields = cls.get_field(plan, 'repository_fields')
 
         new_vars = field_vars.copy()
         new_vars['hosting_account_username'] = username
@@ -412,32 +1117,67 @@ class HostingService(object):
         return results
 
     def get_repository_hook_instructions(self, request, repository):
-        """Returns instructions for setting up incoming webhooks.
+        """Return instructions for setting up incoming webhooks.
 
         Subclasses can override this (and set
         `has_repository_hook_instructions = True` on the subclass) to provide
         instructions that administrators can see when trying to configure an
         incoming webhook for the hosting service.
 
-        This is expected to return HTML for the instructions. The function
-        is responsible for escaping any content.
+        Args:
+            request (django.http.HttpRequest):
+                The current HTTP request.
+
+            repository (reviewboard.scmtools.models.Repository):
+                The repository for webhook setup instructions.
+
+        Returns:
+            django.utils.text.SafeText:
+            Rendered and escaped HTML for displaying to the user.
         """
         raise NotImplementedError
 
     @classmethod
     def get_bug_tracker_requires_username(cls, plan=None):
+        """Return whether or not the bug tracker requires usernames.
+
+        Args:
+            plan (unicode, optional):
+                The name of the plan associated with the account.
+
+        Raises:
+            NotImplementedError:
+                If the hosting service does not support bug tracking.
+        """
         if not cls.supports_bug_trackers:
             raise NotImplementedError
 
         return ('%(hosting_account_username)s' in
-                cls._get_field(plan, 'bug_tracker_field', ''))
+                cls.get_field(plan, 'bug_tracker_field', ''))
 
     @classmethod
     def get_bug_tracker_field(cls, plan, field_vars):
+        """Return the bug tracker field for the given plan.
+
+        Args:
+            plan (unicode):
+                The name of the plan associated with the account.
+
+            field_vars (dict):
+                The field values from the hosting service form.
+
+        Returns:
+            unicode:
+            The value of the bug tracker field.
+
+        Raises
+            KeyError:
+               The provided plan is not valid for the hosting service.
+        """
         if not cls.supports_bug_trackers:
             raise NotImplementedError
 
-        bug_tracker_field = cls._get_field(plan, 'bug_tracker_field')
+        bug_tracker_field = cls.get_field(plan, 'bug_tracker_field')
 
         if not bug_tracker_field:
             return ''
@@ -458,7 +1198,27 @@ class HostingService(object):
                 })
 
     @classmethod
-    def _get_field(cls, plan, name, default=None):
+    def get_field(cls, plan, name, default=None):
+        """Return the value of the field for the given plan.
+
+        If ``plan`` is not ``None``, the field will be looked up in the plan
+        configuration for the service. Otherwise the hosting service's default
+        value will be used.
+
+        Args:
+            plan (unicode):
+                The plan name.
+
+            name (unicode):
+                The field name.
+
+            default (unicode, optional):
+                A default value if the field is not present.
+
+        Returns:
+            unicode:
+            The field value.
+        """
         if cls.plans:
             assert plan
 
@@ -469,107 +1229,156 @@ class HostingService(object):
         return getattr(cls, name, default)
 
 
-_hosting_services = {}
 _hostingsvcs_urlpatterns = {}
-_populated = False
 
 
-def _populate_hosting_services():
-    """Populates a list of known hosting services from Python entrypoints.
+class HostingServiceRegistry(EntryPointRegistry):
+    """A registry for managing hosting services."""
 
-    This is called any time we need to access or modify the list of hosting
-    services, to ensure that we have loaded the initial list once.
-    """
-    global _populated
+    entry_point = 'reviewboard.hosting_services'
+    lookup_attrs = ['hosting_service_id']
 
-    if not _populated:
-        _populated = True
+    errors = {
+        ALREADY_REGISTERED: _(
+            '"%(item)s" is already a registered hosting service.'
+        ),
+        LOAD_ENTRY_POINT: _(
+            'Unable to load repository hosting service %(entry_point)s: '
+            '%(error)s.'
+        ),
+        NOT_REGISTERED: _(
+            '"%(attr_value)s" is not a registered hosting service.'
+        ),
+    }
 
-        for entry in iter_entry_points('reviewboard.hosting_services'):
-            try:
-                register_hosting_service(entry.name, entry.load())
-            except Exception as e:
-                logging.error(
-                    'Unable to load repository hosting service %s: %s'
-                    % (entry, e))
+    def __init__(self):
+        super(HostingServiceRegistry, self).__init__()
+        self._url_patterns = {}
+
+    def unregister(self, service):
+        """Unregister a hosting service.
+
+        This will remove all registered URLs that the hosting service has
+        defined.
+
+        Args:
+            service (type):
+                The
+                :py:class:`~reviewboard.hostingsvcs.service.HostingService`
+                subclass.
+        """
+        super(HostingServiceRegistry, self).unregister(service)
+
+        if service.hosting_service_id in self._url_patterns:
+            cls_urlpatterns = self._url_patterns[service.hosting_service_id]
+            hostingsvcs_urls.dynamic_urls.remove_patterns(cls_urlpatterns)
+            del self._url_patterns[service.hosting_service_id]
+
+    def process_value_from_entry_point(self, entry_point):
+        """Load the class from the entry point.
+
+        The ``id`` attribute will be set on the class from the entry point's
+        name.
+
+        Args:
+            entry_point (pkg_resources.EntryPoint):
+                The entry point.
+
+        Returns:
+            type:
+            The :py:class:`HostingService` subclass.
+        """
+        cls = entry_point.load()
+        cls.hosting_service_id = entry_point.name
+        return cls
+
+    def register(self, service):
+        """Register a hosting service.
+
+        This also adds the URL patterns defined by the hosting service. If the
+        hosting service has a :py:attr:`HostingService.repository_url_patterns`
+        attribute that is non-``None``, they will be automatically added.
+
+        Args:
+            service (type):
+                The :py:class:`HostingService` subclass.
+        """
+        super(HostingServiceRegistry, self).register(service)
+
+        if service.repository_url_patterns:
+            cls_urlpatterns = [
+                url(r'^(?P<hosting_service_id>%s)/'
+                    % re.escape(service.hosting_service_id),
+                    include(service.repository_url_patterns)),
+            ]
+
+            self._url_patterns[service.hosting_service_id] = cls_urlpatterns
+            hostingsvcs_urls.dynamic_urls.add_patterns(cls_urlpatterns)
 
 
-def _add_hosting_service_url_pattern(name, cls):
-    """Adds the URL patterns defined by the registering hosting service.
-
-    Creates a base URL pattern for the hosting service based on the name
-    and adds the repository_url_patterns of the class to the base URL
-    pattern.
-
-    Throws a KeyError if the hosting URL pattern has already been added
-    before. Does not add the url_pattern of the hosting service if the
-    repository_url_patterns property is None.
-    """
-    if name in _hostingsvcs_urlpatterns:
-        raise KeyError('URL patterns for "%s" are already added.' % name)
-
-    if cls.repository_url_patterns:
-        cls_urlpatterns = patterns(
-            '',
-            url(r'^(?P<hosting_service_id>' + name + ')/',
-                include(cls.repository_url_patterns))
-        )
-        _hostingsvcs_urlpatterns[name] = cls_urlpatterns
-        hostingsvcs_urls.dynamic_urls.add_patterns(cls_urlpatterns)
+_hosting_service_registry = HostingServiceRegistry()
 
 
 def get_hosting_services():
-    """Gets the list of hosting services."""
-    _populate_hosting_services()
+    """Return the list of hosting services.
 
-    return _hosting_services.values()
+    Returns:
+        list:
+        The :py:class:`~reviewboard.hostingsvcs.service.HostingService`
+        subclasses.
+    """
+    return list(_hosting_service_registry)
 
 
 def get_hosting_service(name):
-    """Retrieves the hosting service with the given name.
+    """Return the hosting service with the given name.
 
     If the hosting service is not found, None will be returned.
     """
-    _populate_hosting_services()
-
-    return _hosting_services.get(name, None)
+    try:
+        return _hosting_service_registry.get('hosting_service_id', name)
+    except ItemLookupError:
+        return None
 
 
 def register_hosting_service(name, cls):
-    """Registers a custom hosting service class.
+    """Register a custom hosting service class.
 
     A name can only be registered once. A KeyError will be thrown if attempting
     to register a second time.
+
+    Args:
+        name (unicode):
+            The name of the hosting service. If the hosting service already
+            has an ID assigned as
+            :py:attr:`~HostingService.hosting_service_id`, that value should
+            be passed. Note that this will also override any existing
+            ID on the service.
+
+        cls (type):
+            The hosting service class. This should be a subclass of
+            :py:class:`~HostingService`.
     """
-    _populate_hosting_services()
-
-    if name in _hosting_services:
-        raise KeyError('"%s" is already a registered hosting service' % name)
-
     cls.hosting_service_id = name
-    _hosting_services[name] = cls
-    cls.id = name
-
-    _add_hosting_service_url_pattern(name, cls)
+    _hosting_service_registry.register(cls)
 
 
 def unregister_hosting_service(name):
-    """Unregisters a previously registered hosting service."""
-    _populate_hosting_services()
+    """Unregister a previously registered hosting service.
 
+    Args:
+        name (unicode):
+            The name of the hosting service.
+    """
     try:
-        del _hosting_services[name]
-    except KeyError:
-        logging.error('Failed to unregister unknown hosting service "%s"' %
-                      name)
-        raise KeyError('"%s" is not a registered hosting service' % name)
-
-    if name in _hostingsvcs_urlpatterns:
-        hostingsvc_urlpattern = _hostingsvcs_urlpatterns[name]
-        hostingsvcs_urls.dynamic_urls.remove_patterns(hostingsvc_urlpattern)
-        del _hostingsvcs_urlpatterns[name]
+        _hosting_service_registry.unregister_by_attr('hosting_service_id',
+                                                     name)
+    except ItemLookupError as e:
+        logging.error('Failed to unregister unknown hosting service "%s"'
+                      % name)
+        raise e
 
 
 @receiver(initializing, dispatch_uid='populate_hosting_services')
 def _on_initializing(**kwargs):
-    _populate_hosting_services()
+    _hosting_service_registry.populate()

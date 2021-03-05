@@ -22,16 +22,16 @@ suite('rb/resources/models/DraftReviewRequest', function() {
         spyOn(callbacks, 'success');
         spyOn(callbacks, 'error');
 
-        spyOn(reviewRequest, 'ready').andCallFake(function(options, context) {
+        spyOn(reviewRequest, 'ready').and.callFake(function(options, context) {
             options.ready.call(context);
         });
 
         spyOn(reviewRequest, 'ensureCreated')
-            .andCallFake(function(options, context) {
+            .and.callFake(function(options, context) {
                 options.success.call(context);
             });
 
-        spyOn(draft, 'ready').andCallFake(function(options, context) {
+        spyOn(draft, 'ready').and.callFake(function(options, context) {
             options.ready.call(context);
         });
     });
@@ -41,9 +41,9 @@ suite('rb/resources/models/DraftReviewRequest', function() {
     });
 
     it('publish', function() {
-        spyOn(RB, 'apiCall').andCallThrough();
-        spyOn($, 'ajax').andCallFake(function(request) {
-            expect(request.data['public']).toBe(1);
+        spyOn(RB, 'apiCall').and.callThrough();
+        spyOn($, 'ajax').and.callFake(function(request) {
+            expect(request.data.public).toBe(1);
 
             request.success({
                 stat: 'ok',
@@ -91,7 +91,10 @@ suite('rb/resources/models/DraftReviewRequest', function() {
                 target_groups: 'targetGroups',
                 target_people: 'targetPeople',
                 testing_done: 'testingDone',
-                testing_done_text_type: 'plain'
+                testing_done_text_type: 'plain',
+                links: {
+                    submitter: 'submitter'
+                }
             }
         });
 
@@ -103,91 +106,12 @@ suite('rb/resources/models/DraftReviewRequest', function() {
         expect(data.changeDescriptionRichText).toBe(true);
         expect(data.description).toBe('description');
         expect(data.descriptionRichText).toBe(true);
-        expect(data['public']).toBe('public');
+        expect(data.public).toBe('public');
         expect(data.summary).toBe('summary');
+        expect(data.submitter).toBe('submitter');
         expect(data.targetGroups).toBe('targetGroups');
         expect(data.targetPeople).toBe('targetPeople');
         expect(data.testingDone).toBe('testingDone');
         expect(data.testingDoneRichText).toBe(false);
     });
-
-    describe('validate', function() {
-        describe('When publishing', function() {
-            var options = {
-                    publishing: true
-                },
-                attrs;
-
-            beforeEach(function() {
-                attrs = {
-                    targetGroups: [{
-                        name: 'mygroup',
-                        url: '/groups/mygroup/'
-                    }],
-                    targetPeople: [{
-                        username: 'myuser',
-                        url: '/users/myuser/'
-                    }],
-                    summary: 'summary',
-                    description: 'description'
-                };
-            });
-
-            describe('Description', function() {
-                it('Has description', function() {
-                    expect(draft.validate(attrs, options)).toBe(undefined);
-                });
-
-                it('No description', function() {
-                    attrs.description = '';
-                    expect(draft.validate(attrs, options)).toBe(
-                        RB.DraftReviewRequest.strings.DESCRIPTION_REQUIRED);
-                });
-
-                it('No description (after trim)', function() {
-                    attrs.description = '    ';
-                    expect(draft.validate(attrs, options)).toBe(
-                        RB.DraftReviewRequest.strings.DESCRIPTION_REQUIRED);
-                });
-            });
-
-            describe('Summary', function() {
-                it('Has summary', function() {
-                    expect(draft.validate(attrs, options)).toBe(undefined);
-                });
-
-                it('No summary', function() {
-                    attrs.summary = '';
-                    expect(draft.validate(attrs, options)).toBe(
-                        RB.DraftReviewRequest.strings.SUMMARY_REQUIRED);
-                });
-
-                it('No summary (after trim)', function() {
-                    attrs.summary = '    ';
-                    expect(draft.validate(attrs, options)).toBe(
-                        RB.DraftReviewRequest.strings.SUMMARY_REQUIRED);
-                });
-            });
-
-            describe('Reviewers', function() {
-                it('Has groups and no users', function() {
-                    attrs.targetPeople = [];
-                    expect(draft.validate(attrs, options)).toBe(undefined);
-                });
-
-                it('Has users and no groups', function() {
-                    attrs.targetGroups = [];
-                    expect(draft.validate(attrs, options)).toBe(undefined);
-                });
-
-                it('No reviewers', function() {
-                    attrs.targetGroups = [];
-                    attrs.targetPeople = [];
-                    expect(draft.validate(attrs, options)).toBe(
-                        RB.DraftReviewRequest.strings.REVIEWERS_REQUIRED);
-                });
-            });
-        });
-    });
 });
-

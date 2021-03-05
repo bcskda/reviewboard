@@ -1,6 +1,9 @@
 from __future__ import unicode_literals
 
+import socket
+
 from django.contrib.sites.models import Site
+from django.utils import six
 from django.utils.six.moves.urllib.parse import urljoin
 from djblets.siteconfig.models import SiteConfiguration
 
@@ -28,9 +31,30 @@ def get_server_url(local_site_name=None, local_site=None, request=None):
                           site.domain, root)
 
 
-def build_server_url(*args, **kwargs):
+def build_server_url(path=None, **kwargs):
     """Build an absolute URL containing the full URL to the server.
 
-    All additional arguments passed will be appended as paths to the URL.
+    A path can be supplied that will be joined to the server URL.
+
+    Args:
+        path (unicode):
+            The path to append to the server URL.
+
+        **kwargs (dict):
+            Additional arguments to pass to :py:func:`get_server_url`.
+
+    Returns:
+        unicode:
+        The resulting URL.
     """
-    return urljoin(get_server_url(**kwargs), *args)
+    return urljoin(get_server_url(**kwargs), path)
+
+
+def get_hostname():
+    """Return the hostname for this Review Board server.
+
+    Returns:
+        unicode:
+        The hostname for the server.
+    """
+    return six.text_type(socket.gethostname())

@@ -4,6 +4,7 @@ from __future__ import print_function, unicode_literals
 
 import getpass
 import imp
+import logging
 import os
 import pkg_resources
 import platform
@@ -13,6 +14,7 @@ import sys
 import textwrap
 import subprocess
 import warnings
+from importlib import import_module
 from optparse import OptionGroup, OptionParser
 from random import choice as random_choice
 
@@ -22,6 +24,7 @@ from django.utils.encoding import force_str
 from django.utils.six.moves import input
 from django.utils.six.moves.urllib.request import urlopen
 
+import reviewboard
 from reviewboard import get_manual_url, get_version_string
 from reviewboard.rb_platform import (SITELIST_FILE_UNIX,
                                      DEFAULT_FS_CACHE_PATH,
@@ -178,7 +181,7 @@ class Site(object):
 
     def get_default_site_path(self, install_dir):
         """Return the default site path."""
-        if os.path.isabs(install_dir):
+        if os.path.isabs(install_dir) or os.sep in install_dir:
             return install_dir
 
         return os.path.join(INSTALLED_SITE_PATH, install_dir)
@@ -186,6 +189,7 @@ class Site(object):
     def rebuild_site_directory(self):
         """Rebuild the site hierarchy."""
         htdocs_dir = os.path.join(self.install_dir, "htdocs")
+        errordocs_dir = os.path.join(htdocs_dir, 'errordocs')
         media_dir = os.path.join(htdocs_dir, "media")
         static_dir = os.path.join(htdocs_dir, "static")
 
@@ -223,16 +227,23 @@ class Site(object):
 
             try:
                 if hasattr(os, 'chown'):
-                    os.chown(writable_dir, writable_st.st_uid, writable_st.st_gid)
+                    os.chown(writable_dir, writable_st.st_uid,
+                             writable_st.st_gid)
             except OSError:
                 # The user didn't have permission to change the ownership,
                 # they'll have to do this manually later.
                 pass
 
-        self.link_pkg_dir(
-            "reviewboard",
-            "htdocs/errordocs",
-            os.path.join(self.install_dir, "htdocs", "errordocs"))
+        # Process the error docs templates and add them where the web server
+        # can get to them.
+        if os.path.exists(errordocs_dir) and os.path.islink(errordocs_dir):
+            # This is from an older install where errordocs was linked to
+            # the versions shipped in the package.
+            os.unlink(errordocs_dir)
+
+        self.mkdir(errordocs_dir)
+        self.process_template('cmdline/conf/errordocs/500.html.in',
+                              os.path.join(errordocs_dir, '500.html'))
 
         self.link_pkg_dir("reviewboard",
                           "htdocs/static/lib",
@@ -254,7 +265,7 @@ class Site(object):
 
         # Generate .htaccess files that enable compression and
         # never expires various file types.
-        htaccess = '\n'.join([
+        common_htaccess = [
             '<IfModule mod_expires.c>',
             '  <FilesMatch "\.(jpg|gif|png|css|js|htc)">',
             '    ExpiresActive on',
@@ -276,11 +287,23 @@ class Site(object):
             ]
         ] + [
             '</IfModule>',
-        ])
+        ]
 
-        for dirname in (static_dir, media_dir):
-            with open(os.path.join(dirname, '.htaccess'), 'w') as fp:
-                fp.write(htaccess)
+        static_htaccess = common_htaccess
+
+        media_htaccess = common_htaccess + [
+            '<IfModule mod_headers.c>',
+            '  Header set Content-Disposition "attachment"',
+            '</IfModule>',
+        ]
+
+        with open(os.path.join(static_dir, '.htaccess'), 'w') as fp:
+            fp.write('\n'.join(static_htaccess))
+            fp.write('\n')
+
+        with open(os.path.join(media_dir, '.htaccess'), 'w') as fp:
+            fp.write('\n'.join(media_htaccess))
+            fp.write('\n')
 
     def setup_settings(self):
         """Set up the environment for running django management commands."""
@@ -451,13 +474,28 @@ class Site(object):
         """Perform a database migration."""
         self.run_manage_command("evolve", ["--noinput", "--execute"])
 
-    def encrypt_passwords(self):
+    def harden_passwords(self):
         """Harden any password storage.
 
-        Any legacy plain-text passwords will be encrypted.
+        Any legacy plain-text passwords will be encrypted, and any
+        repositories with stored credentials that are also associated with
+        a hosting service will have those credentials removed.
         """
         from reviewboard.scmtools.models import Repository
 
+        # Due to a bug in Review Board 2.0.x < 2.0.25 and 2.5.x < 2.5.7,
+        # the browser could end up filling in the hidden "password" field
+        # on repositories that were set up to use a hosting service. For
+        # these, we want to make sure those credentials are safely removed.
+        repositories = (
+            Repository.objects
+            .filter(hosting_account__isnull=False)
+            .exclude(username='', encrypted_password='')
+        )
+        repositories.update(username='', encrypted_password='')
+
+        # Any remaining passwords should be encrypted (if coming from an older
+        # version before encryption was added).
         Repository.objects.encrypt_plain_text_passwords()
 
     def get_static_media_upgrade_needed(self):
@@ -477,7 +515,7 @@ class Site(object):
         from reviewboard.diffviewer.models import FileDiff
 
         try:
-            return FileDiff.objects.unmigrated().count() > 0
+            return FileDiff.objects.unmigrated().exists()
         except:
             # Very likely, there was no diffviewer_filediff.diff_hash_id
             # column, indicating a pre-1.7 database. We want to assume
@@ -609,15 +647,16 @@ class Site(object):
 
     def create_admin_user(self):
         """Create an administrator user account."""
-        cwd = os.getcwd()
-        os.chdir(self.abs_install_dir)
-
         from django.contrib.auth.models import User
 
-        User.objects.create_superuser(self.admin_user, self.admin_email,
-                                      self.admin_password)
+        if not User.objects.filter(username=self.admin_user).exists():
+            cwd = os.getcwd()
+            os.chdir(self.abs_install_dir)
 
-        os.chdir(cwd)
+            User.objects.create_superuser(self.admin_user, self.admin_email,
+                                          self.admin_password)
+
+            os.chdir(cwd)
 
     def register_support_page(self):
         """Register this installation with the support data tracker."""
@@ -1728,7 +1767,7 @@ class UpgradeCommand(Command):
                   "Resetting in-database caches.")
             site.run_manage_command("fixreviewcounts")
 
-        site.encrypt_passwords()
+        site.harden_passwords()
 
         from djblets.siteconfig.models import SiteConfiguration
 
@@ -1861,8 +1900,14 @@ def parse_options(args):
     """Parse the given options."""
     global options
 
-    parser = OptionParser(usage="%prog command [options] path",
-                          version="%prog " + VERSION)
+    parser = OptionParser(
+        usage='%prog command [options] path',
+        version=(
+            '%%prog %s\n'
+            'Python %s\n'
+            'Installed to %s'
+            % (VERSION, sys.version, os.path.dirname(reviewboard.__file__))
+        ))
 
     parser.add_option("-d", "--debug",
                       action="store_true", dest="debug", default=DEBUG,
@@ -1907,6 +1952,11 @@ def main():
     """Main application loop."""
     global site
     global ui
+
+    # Ensure we import djblets.log for it to monkey-patch the logging module.
+    import_module('djblets.log')
+
+    logging.basicConfig(level=logging.INFO)
 
     command_name, site_paths = parse_options(sys.argv[1:])
     command = COMMANDS[command_name]

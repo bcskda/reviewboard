@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load compressed i18n rbadmintags staticfiles %}
+{% load i18n pipeline rbadmintags staticfiles %}
 
 {% block title %}{{title}} | {% trans "Administration" %}{% endblock %}
 
@@ -7,12 +7,23 @@
 <script type="text/javascript">window.__admin_media_prefix__ = "{% filter escapejs %}{% static "admin/" %}{% endfilter %}";</script>
 {% endblock %}
 
+{% block scripts-post %}
+{{block.super}}
+{%  javascript 'djblets-config-forms' %}
+{%  javascript 'widgets' %}
+{%  javascript 'oauth-edit' %}
+{%  block admin_scripts_post %}{% endblock %}
+{% endblock %}
+
 {% block extrahead %}
 {% block blockbots %}<meta name="robots" content="NONE,NOARCHIVE" />{% endblock %}
+{{block.super}}
 {% endblock %}
 
 {% block css %}
-{%  compressed_css "admin" %}
+{%  stylesheet 'admin' %}
+{%  stylesheet 'djblets-config-forms' %}
+{%  stylesheet 'widgets' %}
 {%  block extrastyle %}{% endblock %}
 <!--[if lte IE 7]><link rel="stylesheet" type="text/css" href="{% block stylesheet_ie %}{% static "admin/css/ie.css" %}{% endblock %}" /><![endif]-->
 {%  if LANGUAGE_BIDI %}<link rel="stylesheet" type="text/css" href="{% block stylesheet_rtl %}{% static "admin/css/rtl.css" %}{% endblock %}" />{% endif %}
@@ -47,7 +58,7 @@
 {{content}}
 {%  endblock %}
 {%  block sidebar %}{% endblock %}
-{% endblock %}
+{% endblock main_content %}
 
 {% block navbar %}
 {%  if user.is_authenticated %}
@@ -55,13 +66,14 @@
  <li><a href="{% url 'reviewboard.admin.views.dashboard' %}" class="nav-first">{% trans "Admin Dashboard" %}</a></li>
  <li><a href="{% url 'reviewboard.admin.views.dashboard' %}db/">{% trans "Database" %}</a></li>
  <li><a href="{% url 'djblets.extensions.views.extension_list' %}">{% trans "Extensions" %}</a></li>
+ <li><a href="{% url 'integration-list' %}">{% trans "Integrations" %}</a></li>
 </ul>
 {%   block subnavbar %}{% endblock %}
 {%  endif %}
 {% endblock %}
 
 {% block navbar_post %}
-{%  if user.is_authenticated %}
+{%  if user.is_authenticated and not is_popup %}
 <div id="admin-actions" class="clear">
  {% admin_actions %}
 </div>

@@ -1,6 +1,7 @@
 from __future__ import unicode_literals
 
 from django.http import Http404
+from django.utils import six
 from djblets.webapi.decorators import (webapi_response_errors,
                                        webapi_request_fields)
 from djblets.webapi.errors import DOES_NOT_EXIST
@@ -9,6 +10,7 @@ from reviewboard.reviews.views import ReviewsDiffViewerView
 from reviewboard.webapi.base import WebAPIResource
 from reviewboard.webapi.decorators import (webapi_check_local_site,
                                            webapi_check_login_required)
+from reviewboard.webapi.resources import resources
 
 
 class DiffViewerContextView(ReviewsDiffViewerView):
@@ -42,6 +44,13 @@ class DiffContextResource(WebAPIResource):
                 'type': int,
                 'description': 'Which revision of the diff to show.',
             },
+            'filenames': {
+                'type': six.text_type,
+                'description': 'A list of case-sensitive filenames or Unix '
+                               'shell patterns used to filter the resulting '
+                               'list of files.',
+                'added_in': '3.0.4',
+            },
             'interdiff-revision': {
                 'type': int,
                 'description': 'A tip revision for showing interdiffs. If '
@@ -65,18 +74,29 @@ class DiffContextResource(WebAPIResource):
         diff, pagination information, and other data which is used to render
         the diff viewer page.
 
-        Note that in versions 2.0.0 through 2.0.6, the 'interdiff-revision'
-        parameter was named 'interdiff_revision'. Because of the internal
+        Note that in versions 2.0.0 through 2.0.6, the ``interdiff-revision``
+        parameter was named ``interdiff_revision``. Because of the internal
         nature of this API, this was changed without adding backwards
         compatibility for 2.0.7.
         """
         revision = request.GET.get('revision')
         interdiff_revision = request.GET.get('interdiff-revision')
 
+        review_request = resources.review_request.get_object(
+            request, review_request_id=review_request_id,
+            local_site_name=local_site_name, *args, **kwargs)
+
+        if not review_request.is_accessible_by(request.user):
+            return self.get_no_access_error(request, obj=review_request, *args,
+                                            **kwargs)
+
         try:
             view = DiffViewerContextView.as_view()
-            context = view(request, local_site_name, review_request_id,
-                           revision, interdiff_revision)
+            context = view(request=request,
+                           review_request_id=review_request_id,
+                           revision=revision,
+                           interdiff_revision=interdiff_revision,
+                           local_site_name=local_site_name)
         except Http404:
             return DOES_NOT_EXIST
 

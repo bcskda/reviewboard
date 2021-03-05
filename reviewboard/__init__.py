@@ -13,14 +13,7 @@ from __future__ import unicode_literals
 #:
 #: (Major, Minor, Micro, Patch, alpha/beta/rc/final, Release Number, Released)
 #:
-VERSION = (2, 5, 6, 1, 'final', 0, True)
-
-
-#: The major version of Django we're using.
-django_major_version = '1.6'
-
-#: The required version of Django.
-django_version = 'Django>=1.6.11,<1.7'
+VERSION = (3, 0, 20, 0, 'final', 0, True)
 
 
 def get_version_string():
@@ -87,6 +80,7 @@ def initialize():
     will be called automatically in a standard install. If you are writing
     an extension or management command, you do not need to call this yourself.
     """
+    import importlib
     import logging
     import os
 
@@ -97,11 +91,11 @@ def initialize():
     os.environ[b'RBSITE_PYTHONPATH'] = \
         os.path.dirname(settings_local.__file__)
 
-    from Crypto import Random
     from django.conf import settings
     from django.db import DatabaseError
     from djblets import log
     from djblets.cache.serials import generate_ajax_serial
+    from djblets.siteconfig.models import SiteConfiguration
 
     from reviewboard import signals
     from reviewboard.admin.siteconfig import load_site_config
@@ -109,14 +103,11 @@ def initialize():
 
     # This overrides a default django templatetag (url), and we want to make
     # sure it will always get loaded in every python instance.
-    import reviewboard.site.templatetags
+    importlib.import_module('reviewboard.site.templatetags')
 
     is_running_test = getattr(settings, 'RUNNING_TEST', False)
 
     if not is_running_test:
-        # Force PyCrypto to re-initialize the random number generator.
-        Random.atfork()
-
         # Set up logging.
         log.init_logging()
 
@@ -142,6 +133,17 @@ def initialize():
         if not getattr(settings, 'TEMPLATE_SERIAL', None):
             settings.TEMPLATE_SERIAL = settings.AJAX_SERIAL
 
+    try:
+        # Django >= 1.7
+        from django import setup
+        setup()
+    except ImportError:
+        # Django < 1.7
+        pass
+
+    siteconfig = SiteConfiguration.objects.get_current()
+
+    if not is_running_test and siteconfig.version == get_version_string():
         # Load all extensions
         try:
             get_extension_manager().load()

@@ -1,4 +1,8 @@
+@font-family: Verdana, Arial, Helvetica, Sans-Serif;
+
 /* RB Colors */
+
+@default-text-color: #000000;
 
 @light-yellow: #FFF47C;
 @dark-yellow: #A89C00;
@@ -11,9 +15,57 @@
 @link-color: #0000C0;
 
 @required-flag-color: darkred;
+@admin_font_size: 11px;
+@admin-help-text-color: #999;
 
-@btn-primary-color1: #7E9BC6;
-@btn-primary-color2: darken(@btn-primary-color1, 20%);
+/* Common styles for buttons. */
+@btn-bg-color1: #ffffff;
+@btn-bg-color2: darken(@btn-bg-color1, 10%);
+@btn-border-bottom-color: #bbb;
+@btn-border-color: #ccc;
+@btn-border-radius: 4px;
+@btn-border-size: 1px;
+@btn-box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2),
+                       0 1px 2px rgba(0, 0, 0, 0.05);
+@btn-font-size: 13px;
+@btn-font-weight: normal;
+@btn-padding: 3px 8px;
+@btn-text-color: #333;
+@btn-text-shadow: 0 1px 1px rgba(255, 255, 255, 0.75);
+@btn-transition: 0.1s linear all;
+
+/* Styles for active buttons. */
+@btn-active-box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.25),
+                              0 1px 2px rgba(0, 0, 0, 0.05);
+
+/* Styles for disabled buttons. */
+@btn-disabled-box-shadow: none;
+@btn-disabled-opacity: 0.65;
+
+/* Styles for danger buttons. */
+@btn-danger-text-color: white;
+@btn-danger-bg-color1: #ee5f5b;
+@btn-danger-bg-color2: #c43c35;
+
+/* Styles for large buttons. */
+@btn-large-border-radius: 6px;
+@btn-large-font-size: 130%;
+@btn-large-padding: 9px 14px 9px;
+
+/* Styles for small buttons. */
+@btn-small-font-size: 11px;
+@btn-small-padding: 7px 9px 7px;
+
+/* Styles for primary buttons. */
+@btn-primary-bg-color1: #4A90E2;
+@btn-primary-bg-color2: darken(@btn-primary-color1, 9%);
+@btn-primary-color1: @btn-primary-bg-color1;
+@btn-primary-color2: @btn-primary-bg-color2;
+@btn-primary-text-color: white;
+@btn-primary-text-shadow: none;
+
+/* Styles for split buttons. */
+@split-btn-hover-transition-time: 0.25s;
 
 @page-container-padding: 1.5em;
 
@@ -30,6 +82,7 @@
 @box-title-bg: @light-blue;
 @box-shadow: 1px 1px 2px rgba(0, 0, 0, .15);
 @box-padding: 10px;
+@box-main-padding: 5px;
 @box-bg: #FFFFFF;
 
 @edit-icon-margin: 4px;
@@ -41,6 +94,9 @@
 @review-request-bg-gradient-start: lighten(@review-request-bg, 4%);
 @review-request-bg-gradient-end: @review-request-bg;
 @review-request-border-color: #9E9A7F;
+
+@review-request-section-label-font-size: 13px;
+@review-request-summary-font-size: 14px;
 
 @review-request-action-bg: #E5D7A8;
 @review-request-action-border-color: darken(@review-request-action-bg, 35%);
@@ -54,10 +110,12 @@
 @review-request-action-menu-border-color: @review-request-action-border-color;
 @review-request-action-menu-bg: @review-request-action-active-bg;
 @review-request-action-menu-item-hover-bg: @review-request-action-hover-bg;
-@review-request-action-padding-vert: 0.6em;
-@review-request-action-padding-horiz: 1.2em;
+@review-request-action-line-height: 16px;
+@review-request-action-padding-vert: 5px;
+@review-request-action-padding-horiz-icon: 5px;
+@review-request-action-padding-horiz-text: 10px;
 
-@review-request-action-mobile-padding: 0.3em;
+@review-request-action-mobile-padding: 10px;
 
 @review-request-label-color: #575012;
 @review-request-link-color: #0000EE;
@@ -65,9 +123,26 @@
 @review-request-warning-bg: #F5A9A9;
 @review-request-warning-border-color: #FF0000;
 
+// Review request entries
+@review-request-entry-base-bg: #FFFFFF;
+@review-request-entry-collapsed-bg: #ECECEE;
+@review-request-entry-padding: 12px;
+@review-request-entry-new-border-color: #2278FC;
+@review-request-entry-link-offset: -1em;
+@review-request-entry-link-margin-left: -1px;
+@review-request-entry-has-avatar-link-offset: 0;
+@review-request-entry-has-avatar-link-margin-left: 0;
+
 // Reviews
 @reviews-padding-horiz: 0.5em;
 @review-box-border-color: #999999;
+@review-comment-author-color: #AB5603;
+@review-comment-author-color-draft: #4E9A06;
+@review-comment-border-left-size: 2px;
+@review-comment-filename-background-color: #F0F0F0;
+@review-comment-filename-border-color: #C0C0C0;
+@review-comment-padding: 2em;
+@review-comment-section-margin-top: (2 * @review-comment-padding);
 
 // Review UIs
 @review-ui-header-bg: @review-request-bg;
@@ -99,6 +174,12 @@
 @issue-resolved-border-color: darken(@issue-resolved-bg, 10%);
 @issue-resolved-hover-bg: darken(@issue-resolved-bg, 5%);
 @issue-resolved-link-color: darken(@issue-resolved-bg, 60%);
+@issue-verifying-bg: lighten(@issue-opened-bg, 5%);
+@issue-verifying-hover-bg: desaturate(darken(@issue-verifying-bg, 10%), 20%);
+
+@shipit-bg: #7feb14;
+@shipit-border-color: #478a06;
+@shipit-text-color: #202003;
 
 /*
  * At least on Chrome, using points instead of pixels does not reliably
@@ -107,12 +188,19 @@
  */
 @textarea-font-size: 13px;
 @textarea-font-family: monospace;
-@textarea-line-height: (@textarea-font-size + 2px);
 @textarea-border-color: #b8b5a0;
-@textarea-border: 1px #b8b5a0 solid;
+@textarea-border-size: 1px;
+@textarea-border: @textarea-border-size @textarea-border-color solid;
 @textarea-editor-background: white;
-@textarea-editor-margin: 10px 0 0 0;
+@textarea-editor-margin-top: 10px;
+@textarea-editor-margin: @textarea-editor-margin-top 0 0 0;
 @textarea-editor-padding: 10px;
+
+/*
+ * Add room (4px) for the inline code styling's borders. This also generally
+ * just gives extra breathing room for text.
+ */
+@textarea-line-height: (@textarea-font-size + 4px);
 
 @z-index-base: 1;
 @z-index-deco: 20;
@@ -129,6 +217,7 @@
 @z-index-spinner: 140;
 @z-index-nav-menu-mask: 199;
 @z-index-nav-menu: 200;
+@z-index-dnd-overlay: 210;
 
 // Icon dimensions
 @rb-icon-edit-width: 20px;
@@ -145,6 +234,12 @@
 
 @comment-flag-ghost-color: #eeeeec;
 @comment-flag-ghost-border-color: #888a85;
+
+// Comment flag tooltip
+@comments-tooltip-padding: 5px;
+@comments-tooltip-border-color: #5170B3;
+@comments-tooltip-background: @comment-flag-color;
+@comments-tooltip-draft-background: @comment-flag-draft-color;
 
 // Comment dialog
 @comment-dlg-bg: #ACEB6F;
@@ -168,6 +263,7 @@
 @diff-moved-to-bg-color: darken(@diff-moved-from-bg-color, 3%);
 
 // Equals lines
+@diff-background-color: #FFFFFF;
 @diff-linenum-color: #777777;
 @diff-linenum-background-color: #F0F0F0;
 @diff-selected-color: #E2E2E2;
@@ -237,7 +333,7 @@
 
 // Page Sidebar
 @page-sidebar-bg: #E9E9E9;
-@page-sidebar-count-color: #A02222;
+@page-sidebar-count-color: #2222A0;
 @page-sidebar-count-zero-color: #BBBBBB;
 @page-sidebar-horiz-padding: 0.8em;
 @page-sidebar-vert-padding: 0.4em;
@@ -291,6 +387,26 @@
 
 // Trophy banner
 @trophy-banner-bg-color: #fdf2a0;
+
+// Infoboxes
+@infobox-padding: 0.75em;
+@infobox-bg-color: #F9F9F9;
+@infobox-border-color: #666666;
+@infobox-border-radius: 3px;
+@infobox-inner-border-radius: 2px;
+@infobox-header-font-size: 1.4em;
+@infobox-hover-item-content-padding-horiz: 6px;
+@infobox-hover-item-content-padding-vert: 4px;
+@infobox-hover-item-content-offset-top: 20px;
+@infobox-item-small-icon-size: 16px;
+
+@user-infobox-avatar-size: 128px;
+
+// Drag-and-drop overlays
+@dnd-overlay-background: rgba(0, 0, 0, 0.8);
+@dnd-overlay-border: solid 2px grey;
+@dnd-overlay-text-color: #dddddd;
+@dnd-overlay-font-size: 150%;
 
 
 @import (reference) "mixins/gradients.less";

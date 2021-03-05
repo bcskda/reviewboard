@@ -40,7 +40,7 @@ suite('rb/models/ReviewRequestEditor', function() {
                 expect(function() { editor.decr('foo'); }).toThrow();
 
                 expect(console.assert).toHaveBeenCalled();
-                expect(console.assert.mostRecentCall.args[0]).toBe(false);
+                expect(console.assert.calls.mostRecent().args[0]).toBe(false);
                 expect(editor.get('foo')).toBe('abc');
             });
 
@@ -77,7 +77,7 @@ suite('rb/models/ReviewRequestEditor', function() {
                 expect(function() { editor.incr('foo'); }).toThrow();
 
                 expect(console.assert).toHaveBeenCalled();
-                expect(console.assert.mostRecentCall.args[0]).toBe(false);
+                expect(console.assert.calls.mostRecent().args[0]).toBe(false);
                 expect(editor.get('foo')).toBe('abc');
             });
         });
@@ -88,32 +88,65 @@ suite('rb/models/ReviewRequestEditor', function() {
             it('For closeDescription', function() {
                 reviewRequest.set('closeDescription', 'Test');
 
-                value = editor.getDraftField('closeDescription', {});
+                value = editor.getDraftField('closeDescription');
                 expect(value).toBe('Test');
             });
 
             it('For closeDescriptionRichText', function() {
                 reviewRequest.set('closeDescriptionRichText', true);
 
-                value = editor.getDraftField('closeDescriptionRichText', {});
+                value = editor.getDraftField('closeDescriptionRichText');
                 expect(value).toBe(true);
             });
 
             it('For draft fields', function() {
                 reviewRequest.draft.set('description', 'Test');
 
-                value = editor.getDraftField('description', {});
+                value = editor.getDraftField('description');
                 expect(value).toBe('Test');
             });
 
-            it('For custom fields', function() {
-                reviewRequest.draft.get('extraData').foo = 'Test';
+            it('With useExtraData', function() {
+                var extraData = reviewRequest.draft.get('extraData');
 
-                value = editor.getDraftField('bar', {
-                    useExtraData: true,
-                    fieldID: 'foo'
+                extraData.foo = '**Test**';
+
+                value = editor.getDraftField('foo', {
+                    useExtraData: true
                 });
-                expect(value).toBe('Test');
+                expect(value).toBe('**Test**');
+            });
+
+            describe('With useExtraData and useRawTextValue', function() {
+                it('With field in rawTextFields', function() {
+                    var draft = reviewRequest.draft,
+                        extraData = reviewRequest.draft.get('extraData');
+
+                    extraData.foo = '<b>Test</b>';
+                    draft.set('rawTextFields', {
+                        extra_data: {
+                            foo: '**Test**'
+                        }
+                    });
+
+                    value = editor.getDraftField('foo', {
+                        useExtraData: true,
+                        useRawTextValue: true
+                    });
+                    expect(value).toBe('**Test**');
+                });
+
+                it('With field not in rawTextFields', function() {
+                    var extraData = reviewRequest.draft.get('extraData');
+
+                    extraData.foo = '<b>Test</b>';
+
+                    value = editor.getDraftField('foo', {
+                        useExtraData: true,
+                        useRawTextValue: true
+                    });
+                    expect(value).toBe('<b>Test</b>');
+                });
             });
         });
 
@@ -145,10 +178,12 @@ suite('rb/models/ReviewRequestEditor', function() {
 
                 it('Successful saves', function() {
                     spyOn(draft, 'save')
-                        .andCallFake(function(options, context) {
+                        .and.callFake(function(options, context) {
                             options.success.call(context);
                         });
-                    editor.setDraftField('summary', 'My Summary', callbacks);
+                    editor.setDraftField('summary', 'My Summary', _.defaults({
+                        jsonFieldName: 'summary'
+                    }, callbacks));
 
                     expect(callbacks.success).toHaveBeenCalled();
                     expect(editor.get('publishing')).toBe(false);
@@ -158,7 +193,7 @@ suite('rb/models/ReviewRequestEditor', function() {
 
                 it('Field set errors', function() {
                     spyOn(draft, 'save')
-                        .andCallFake(function(options, context) {
+                        .and.callFake(function(options, context) {
                             options.error.call(context, draft, {
                                 errorPayload: {
                                     fields: {
@@ -203,7 +238,7 @@ suite('rb/models/ReviewRequestEditor', function() {
                                 .toHaveBeenCalled();
 
                             expect(
-                                reviewRequest.draft.save.calls[0].args[0].data
+                                reviewRequest.draft.save.calls.argsFor(0)[0].data
                             ).toEqual({
                                 changedescription_text_type: textType,
                                 changedescription: 'My description',
@@ -221,88 +256,41 @@ suite('rb/models/ReviewRequestEditor', function() {
                         });
                     });
                 });
-
-                describe('closeDescription', function() {
-                    function testCloseDescription(closeType, richText) {
-                        spyOn(reviewRequest, 'close')
-                            .andCallFake(function(options) {
-                                expect(options.type).toBe(closeType);
-                                expect(options.description)
-                                    .toBe('My description');
-                                expect(options.richText).toBe(richText);
-                            });
-
-                        editor.setDraftField('closeDescription',
-                                             'My description', {
-                            closeType: closeType,
-                            richText: richText
-                        });
-
-                        expect(reviewRequest.close).toHaveBeenCalled();
-                    }
-
-                    describe('Discarded description', function() {
-                        it('For Markdown', function() {
-                            testCloseDescription(
-                                RB.ReviewRequest.CLOSE_DISCARDED,
-                                true,
-                                'markdown');
-                        });
-
-                        it('For plain text', function() {
-                            testCloseDescription(
-                                RB.ReviewRequest.CLOSE_DISCARDED,
-                                false,
-                                'plain');
-                        });
-                    });
-
-                    describe('Submitted description', function() {
-                        it('For Markdown', function() {
-                            testCloseDescription(
-                                RB.ReviewRequest.CLOSE_SUBMITTED,
-                                true,
-                                'markdown');
-                        });
-
-                        it('For plain text', function() {
-                            testCloseDescription(
-                                RB.ReviewRequest.CLOSE_SUBMITTED,
-                                false,
-                                'plain');
-                        });
-                    });
-                });
             });
 
             describe('Special list fields', function() {
                 describe('targetGroups', function() {
                     it('Empty', function() {
                         spyOn(draft, 'save')
-                            .andCallFake(function(options, context) {
+                            .and.callFake(function(options, context) {
                                 options.success.call(context);
                             });
 
-                        editor.setDraftField('targetGroups', '', callbacks);
+                        editor.setDraftField('targetGroups', '', _.defaults({
+                            jsonFieldName: 'target_groups'
+                        }, callbacks));
 
                         expect(callbacks.success).toHaveBeenCalled();
                     });
 
                     it('With values', function() {
                         spyOn(draft, 'save')
-                            .andCallFake(function(options, context) {
+                            .and.callFake(function(options, context) {
                                 options.success.call(context);
                             });
 
-                        editor.setDraftField('targetGroups', 'group1, group2',
-                                             callbacks);
+                        editor.setDraftField(
+                            'targetGroups', 'group1, group2',
+                           _.defaults({
+                                jsonFieldName: 'target_groups'
+                            }, callbacks));
 
                         expect(callbacks.success).toHaveBeenCalled();
                     });
 
                     it('With invalid groups', function() {
                         spyOn(draft, 'save')
-                            .andCallFake(function(options, context) {
+                            .and.callFake(function(options, context) {
                                 options.error.call(context, draft, {
                                     errorPayload: {
                                         fields: {
@@ -318,8 +306,8 @@ suite('rb/models/ReviewRequestEditor', function() {
                         }, callbacks));
 
                         expect(callbacks.error).toHaveBeenCalledWith({
-                            errorText: "Groups 'group1' and 'group2' do " +
-                                       "not exist."
+                            errorText: 'Groups "group1" and "group2" do ' +
+                                       'not exist.'
                         });
                     });
                 });
@@ -327,7 +315,7 @@ suite('rb/models/ReviewRequestEditor', function() {
                 describe('targetPeople', function() {
                     it('Empty', function() {
                         spyOn(draft, 'save')
-                            .andCallFake(function(options, context) {
+                            .and.callFake(function(options, context) {
                                 options.success.call(context);
                             });
 
@@ -340,7 +328,7 @@ suite('rb/models/ReviewRequestEditor', function() {
 
                     it('With values', function() {
                         spyOn(draft, 'save')
-                            .andCallFake(function(options, context) {
+                            .and.callFake(function(options, context) {
                                 options.success.call(context);
                             });
 
@@ -355,7 +343,7 @@ suite('rb/models/ReviewRequestEditor', function() {
 
                     it('With invalid users', function() {
                         spyOn(draft, 'save')
-                            .andCallFake(function(options, context) {
+                            .and.callFake(function(options, context) {
                                 options.error.call(context, draft, {
                                     errorPayload: {
                                         fields: {
@@ -372,7 +360,60 @@ suite('rb/models/ReviewRequestEditor', function() {
                             }, callbacks));
 
                         expect(callbacks.error).toHaveBeenCalledWith({
-                            errorText: "Users 'user1' and 'user2' do not exist."
+                            errorText: 'Users "user1" and "user2" do not exist.'
+                        });
+                    });
+                });
+
+                describe('submitter', function() {
+                    it('Empty', function() {
+                        spyOn(draft, 'save')
+                            .and.callFake(function(options, context) {
+                                options.success.call(context);
+                            });
+
+                        editor.setDraftField('submitter', '', _.defaults({
+                            jsonFieldName: 'submitter'
+                        }, callbacks));
+
+                        expect(callbacks.success).toHaveBeenCalled();
+                    });
+
+                    it('With value', function() {
+                        spyOn(draft, 'save')
+                            .and.callFake(function(options, context) {
+                                options.success.call(context);
+                            });
+
+                        editor.setDraftField(
+                            'submitter', 'user1',
+                            _.defaults({
+                                jsonFieldName: 'submitter'
+                            }, callbacks));
+
+                        expect(callbacks.success).toHaveBeenCalled();
+                    });
+
+                    it('With invalid user', function() {
+                        spyOn(draft, 'save')
+                            .and.callFake(function(options, context) {
+                                options.error.call(context, draft, {
+                                    errorPayload: {
+                                        fields: {
+                                            submitter: ['user1']
+                                        }
+                                    }
+                                });
+                            });
+
+                        editor.setDraftField(
+                            'submitter', 'user1',
+                            _.defaults({
+                                jsonFieldName: 'submitter'
+                            }, callbacks));
+
+                        expect(callbacks.error).toHaveBeenCalledWith({
+                            errorText: 'User "user1" does not exist.'
                         });
                     });
                 });
@@ -399,7 +440,7 @@ suite('rb/models/ReviewRequestEditor', function() {
                         expect(reviewRequest.draft.save)
                             .toHaveBeenCalled();
                         expect(
-                            reviewRequest.draft.save.calls[0].args[0].data
+                            reviewRequest.draft.save.calls.argsFor(0)[0].data
                         ).toEqual({
                             'extra_data.myfield_text_type': textType,
                             'extra_data.myfield': 'Test text.',
@@ -428,7 +469,7 @@ suite('rb/models/ReviewRequestEditor', function() {
                     draft = editor.get('reviewRequest').draft;
 
                 spyOn(draft, 'ensureCreated')
-                    .andCallFake(function(options, context) {
+                    .and.callFake(function(options, context) {
                         options.success.call(context);
                     });
 
@@ -457,7 +498,7 @@ suite('rb/models/ReviewRequestEditor', function() {
 
     describe('Events', function() {
         describe('saved', function() {
-            it('When file attachment saved', function() {
+            it('When new file attachment saved', function() {
                 var fileAttachment = editor.createFileAttachment();
 
                 spyOn(editor, 'trigger');
@@ -466,12 +507,12 @@ suite('rb/models/ReviewRequestEditor', function() {
                 expect(editor.trigger).toHaveBeenCalledWith('saved');
             });
 
-            it('When file attachment destroyed', function() {
+            it('When new file attachment destroyed', function() {
                 var fileAttachment = editor.createFileAttachment(),
                     draft = editor.get('reviewRequest').draft;
 
                 spyOn(draft, 'ensureCreated')
-                    .andCallFake(function(options, context) {
+                    .and.callFake(function(options, context) {
                         options.success.call(context);
                     });
 
@@ -480,14 +521,114 @@ suite('rb/models/ReviewRequestEditor', function() {
 
                 expect(editor.trigger).toHaveBeenCalledWith('saved');
             });
+
+            it('When existing file attachment saved', function() {
+                var fileAttachment =
+                    reviewRequest.draft.createFileAttachment();
+
+                editor = new RB.ReviewRequestEditor({
+                    reviewRequest: reviewRequest,
+                    fileAttachments: new Backbone.Collection(
+                        [fileAttachment])
+                });
+
+                spyOn(editor, 'trigger');
+                fileAttachment.trigger('saved');
+
+                expect(editor.trigger).toHaveBeenCalledWith('saved');
+            });
+
+            it('When existing file attachment destroyed', function() {
+                var fileAttachment =
+                    reviewRequest.draft.createFileAttachment();
+
+                editor = new RB.ReviewRequestEditor({
+                    reviewRequest: reviewRequest,
+                    fileAttachments: new Backbone.Collection(
+                        [fileAttachment])
+                });
+
+                spyOn(reviewRequest.draft, 'ensureCreated')
+                    .and.callFake(function(options, context) {
+                        options.success.call(context);
+                    });
+
+                spyOn(editor, 'trigger');
+                fileAttachment.destroy();
+
+                expect(editor.trigger).toHaveBeenCalledWith('saved');
+            });
+
+            it('When existing screenshot saved', function() {
+                var screenshot = reviewRequest.createScreenshot();
+
+                editor = new RB.ReviewRequestEditor({
+                    reviewRequest: reviewRequest,
+                    screenshots: new Backbone.Collection([screenshot])
+                });
+
+                spyOn(editor, 'trigger');
+                screenshot.trigger('saved');
+
+                expect(editor.trigger).toHaveBeenCalledWith('saved');
+            });
+
+            it('When existing screenshot destroyed', function() {
+                var screenshot = reviewRequest.createScreenshot();
+
+                editor = new RB.ReviewRequestEditor({
+                    reviewRequest: reviewRequest,
+                    screenshots: new Backbone.Collection([screenshot])
+                });
+
+                spyOn(reviewRequest.draft, 'ensureCreated')
+                    .and.callFake(function(options, context) {
+                        options.success.call(context);
+                    });
+
+                spyOn(editor, 'trigger');
+                screenshot.destroy();
+
+                expect(editor.trigger).toHaveBeenCalledWith('saved');
+            });
         });
 
         describe('saving', function() {
-            it('When file attachment saving', function() {
+            it('When new file attachment saving', function() {
                 var fileAttachment = editor.createFileAttachment();
 
                 spyOn(editor, 'trigger');
                 fileAttachment.trigger('saving');
+
+                expect(editor.trigger).toHaveBeenCalledWith('saving');
+            });
+
+            it('When existing file attachment saving', function() {
+                var fileAttachment =
+                    reviewRequest.draft.createFileAttachment();
+
+                editor = new RB.ReviewRequestEditor({
+                    reviewRequest: reviewRequest,
+                    fileAttachments: new Backbone.Collection(
+                        [fileAttachment])
+                });
+
+                spyOn(editor, 'trigger');
+                fileAttachment.trigger('saving');
+
+                expect(editor.trigger).toHaveBeenCalledWith('saving');
+            });
+
+            it('When screenshot saving', function() {
+                var screenshot = reviewRequest.createScreenshot();
+
+                editor = new RB.ReviewRequestEditor({
+                    reviewRequest: reviewRequest,
+                    screenshots: new Backbone.Collection([screenshot])
+                });
+
+                spyOn(editor, 'trigger');
+                screenshot.trigger('saving');
 
                 expect(editor.trigger).toHaveBeenCalledWith('saving');
             });

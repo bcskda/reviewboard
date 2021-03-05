@@ -3,10 +3,16 @@ suite('rb/views/CommentDialogView', function() {
         reviewRequest;
 
     beforeEach(function() {
+        RB.DnDUploader.create();
+
         reviewRequest = new RB.ReviewRequest();
         reviewRequestEditor = new RB.ReviewRequestEditor({
             reviewRequest: reviewRequest
         });
+    });
+
+    afterEach(function() {
+        RB.DnDUploader.instance = null;
     });
 
     describe('Class methods', function() {
@@ -123,6 +129,24 @@ suite('rb/views/CommentDialogView', function() {
                     spyOn(dlg, 'close');
                     $button.click();
                     expect(dlg.close).toHaveBeenCalled();
+                });
+
+                it('Confirms before cancelling unsaved comment', function() {
+                    spyOn(editor, 'cancel');
+                    spyOn(dlg, 'close');
+                    spyOn(window, 'confirm').and.returnValue(true);
+                    editor.set('dirty', true);
+                    $button.click();
+                    expect(dlg.close).toHaveBeenCalled();
+                });
+
+                it('Cancel close when unsaved comment', function() {
+                    spyOn(editor, 'cancel');
+                    spyOn(dlg, 'close');
+                    spyOn(window, 'confirm').and.returnValue(false);
+                    editor.set('dirty', true);
+                    $button.click();
+                    expect(dlg.close).not.toHaveBeenCalled();
                 });
 
                 describe('Visibility', function() {
@@ -443,7 +467,7 @@ suite('rb/views/CommentDialogView', function() {
                     dlg.open();
 
                     $buttons = dlg.$el.find('.other-comments .issue-button');
-                    expect($buttons.length).toBe(3);
+                    expect($buttons.length).toBe(5);
                     expect($buttons.is(':visible')).toBe(true);
                 });
 
@@ -516,7 +540,7 @@ suite('rb/views/CommentDialogView', function() {
         describe('Special keys', function() {
             var $textarea;
 
-            function simulateKeyPress(c, altKey, ctrlKey) {
+            function simulateKeyPress(c, altKey, ctrlKey, metaKey) {
                 var e;
 
                 $textarea.focus();
@@ -526,6 +550,7 @@ suite('rb/views/CommentDialogView', function() {
                     e.which = c;
                     e.altKey = altKey;
                     e.ctrlKey = ctrlKey;
+                    e.metaKey = metaKey;
                     $textarea.trigger(e);
                 });
             }
@@ -628,6 +653,93 @@ suite('rb/views/CommentDialogView', function() {
                 });
             });
 
+            describe('Command-Enter to save', function() {
+                beforeEach(function() {
+                    spyOn(editor, 'save');
+                    spyOn(dlg, 'close');
+                });
+
+                describe('With editor.canSave=true', function() {
+                    describe('Keycode 10', function() {
+                        it('If Markdown', function() {
+                            setupForRichText(true, true);
+
+                            simulateKeyPress(10, false, false, true);
+                            expect(editor.save).toHaveBeenCalled();
+                            expect(dlg.close).toHaveBeenCalled();
+                        });
+
+                        it('If plain text', function() {
+                            setupForRichText(false, true);
+
+                            simulateKeyPress(10, false, false, true);
+                            expect(editor.save).toHaveBeenCalled();
+                            expect(dlg.close).toHaveBeenCalled();
+                        });
+                    });
+
+                    describe('Keycode 13', function() {
+                        it('If Markdown', function() {
+                            setupForRichText(true, true);
+
+                            simulateKeyPress(13, false, false, true);
+                            expect(editor.save).toHaveBeenCalled();
+                            expect(dlg.close).toHaveBeenCalled();
+                        });
+
+                        it('If plain text', function() {
+                            setupForRichText(false, true);
+
+                            simulateKeyPress(13, false, false, true);
+                            expect(editor.save).toHaveBeenCalled();
+                            expect(dlg.close).toHaveBeenCalled();
+                        });
+                    });
+                });
+
+                describe('With editor.canSave=false', function() {
+                    beforeEach(function() {
+                        editor.set('canSave', false);
+                    });
+
+                    describe('Keycode 10', function() {
+                        it('If Markdown', function() {
+                            setupForRichText(true);
+
+                            simulateKeyPress(10, false, false, true);
+                            expect(editor.save).not.toHaveBeenCalled();
+                            expect(dlg.close).not.toHaveBeenCalled();
+                        });
+
+                        it('If plain text', function() {
+                            setupForRichText(false);
+
+                            simulateKeyPress(10, false, false, true);
+                            expect(editor.save).not.toHaveBeenCalled();
+                            expect(dlg.close).not.toHaveBeenCalled();
+                        });
+                    });
+
+                    describe('Keycode 13', function() {
+                        it('If Markdown', function() {
+                            setupForRichText(true);
+
+                            simulateKeyPress(13, false, false, true);
+                            expect(editor.save).not.toHaveBeenCalled();
+                            expect(dlg.close).not.toHaveBeenCalled();
+                        });
+
+                        it('If plain text', function() {
+                            setupForRichText(false);
+
+                            simulateKeyPress(13, false, false, true);
+                            expect(editor.save).not.toHaveBeenCalled();
+                            expect(dlg.close).not.toHaveBeenCalled();
+                        });
+                    });
+                });
+            });
+
             describe('Escape to cancel', function() {
                 describe('Pressing escape in text area', function() {
                     beforeEach(function() {
@@ -636,10 +748,12 @@ suite('rb/views/CommentDialogView', function() {
                     });
 
                     it('If Markdown', function() {
+                        spyOn(window, 'confirm').and.returnValue(true);
                         setupForRichText(true);
 
                         simulateKeyPress($.ui.keyCode.ESCAPE, false, false);
                         expect(editor.cancel).toHaveBeenCalled();
+                        expect(window.confirm).toHaveBeenCalled();
                         expect(dlg.close).toHaveBeenCalled();
                     });
 
@@ -649,6 +763,26 @@ suite('rb/views/CommentDialogView', function() {
                         simulateKeyPress($.ui.keyCode.ESCAPE, false, false);
                         expect(editor.cancel).toHaveBeenCalled();
                         expect(dlg.close).toHaveBeenCalled();
+                    });
+
+                    it('If unsaved comment', function() {
+                        spyOn(window, 'confirm').and.returnValue(true);
+                        editor.set('dirty', true);
+
+                        simulateKeyPress($.ui.keyCode.ESCAPE, false, false);
+                        expect(editor.cancel).toHaveBeenCalled();
+                        expect(window.confirm).toHaveBeenCalled();
+                        expect(dlg.close).toHaveBeenCalled();
+                    });
+
+                    it('If unsaved comment, do not close', function() {
+                        spyOn(window, 'confirm').and.returnValue(false);
+                        editor.set('dirty', true);
+
+                        simulateKeyPress($.ui.keyCode.ESCAPE, false, false);
+                        expect(editor.cancel).not.toHaveBeenCalled();
+                        expect(window.confirm).toHaveBeenCalled();
+                        expect(dlg.close).not.toHaveBeenCalled();
                     });
                 });
             });
@@ -747,11 +881,19 @@ suite('rb/views/CommentDialogView', function() {
             describe('Comment text', function() {
                 var $textarea;
 
-                function simulateTyping(text) {
-                    runs(function() {
+                beforeEach(function() {
+                    dlg.open();
+                    $textarea = $(dlg._textEditor.$('textarea'));
+                });
+
+                describe('Dialog to editor', function() {
+                    var text = 'foo';
+
+                    beforeEach(function(done) {
                         var i,
                             c,
-                            e;
+                            e,
+                            t;
 
                         dlg._textEditor.on('change', function() {
                             changed = true;
@@ -777,24 +919,16 @@ suite('rb/views/CommentDialogView', function() {
                             e.which = c;
                             $textarea.trigger(e);
                         }
+
+                        t = setInterval(function() {
+                            if (dlg._textEditor.getText() === text) {
+                                clearInterval(t);
+                                done();
+                            }
+                        }, 100);
                     });
 
-                    waitsFor(function() {
-                        return dlg._textEditor.getText() === text;
-                    });
-                }
-
-                beforeEach(function() {
-                    dlg.open();
-                    $textarea = $(dlg._textEditor.$('textarea'));
-                });
-
-                it('Dialog to editor', function() {
-                    var text = 'foo';
-
-                    simulateTyping(text);
-
-                    runs(function() {
+                    it('', function() {
                         expect(editor.get('text')).toEqual(text);
                     });
                 });

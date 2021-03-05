@@ -4,41 +4,36 @@ import mimeparse
 import os
 
 from django.conf import settings
-from django.contrib.auth.models import User
+from django.contrib.auth.models import AnonymousUser, User
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils.safestring import SafeText
 from djblets.testing.decorators import add_fixtures
 from kgb import SpyAgency
 
-from reviewboard import initialize
-from reviewboard.attachments.forms import UploadFileForm
+from reviewboard.attachments.forms import UploadFileForm, UploadUserFileForm
 from reviewboard.attachments.mimetypes import (MimetypeHandler,
                                                register_mimetype_handler,
                                                unregister_mimetype_handler)
 from reviewboard.attachments.models import (FileAttachment,
                                             FileAttachmentHistory)
 from reviewboard.diffviewer.models import DiffSet, DiffSetHistory, FileDiff
-from reviewboard.reviews.models import ReviewRequest
 from reviewboard.scmtools.core import PRE_CREATION
+from reviewboard.site.models import LocalSite
 from reviewboard.testing import TestCase
 
 
 class BaseFileAttachmentTestCase(TestCase):
     """Base functionality for FileAttachment test cases."""
 
-    def setUp(self):
-        """Set up this test case."""
-        initialize()
-
     def make_uploaded_file(self):
         """Create a return a file to use for mocking in forms."""
         filename = os.path.join(settings.STATIC_ROOT,
-                                'rb', 'images', 'trophy.png')
-        f = open(filename, 'r')
-        uploaded_file = SimpleUploadedFile(f.name, f.read(),
-                                           content_type='image/png')
-        f.close()
+                                'rb', 'images', 'logo.png')
+
+        with open(filename, 'rb') as fp:
+            uploaded_file = SimpleUploadedFile(fp.name, fp.read(),
+                                               content_type='image/png')
 
         return uploaded_file
 
@@ -89,7 +84,7 @@ class FileAttachmentTests(BaseFileAttachmentTestCase):
 
         file_attachment = form.create()
         self.assertTrue(os.path.basename(file_attachment.file.name).endswith(
-            '__trophy.png'))
+            '__logo.png'))
         self.assertEqual(file_attachment.mimetype, 'image/png')
 
     @add_fixtures(['test_users', 'test_scmtools'])
@@ -115,27 +110,30 @@ class FileAttachmentTests(BaseFileAttachmentTestCase):
         """
         review_request_1 = self.create_review_request(publish=True)
         review_request_2 = self.create_review_request(publish=True)
+        uploaded_file = self.make_uploaded_file()
 
         history = FileAttachmentHistory.objects.create(display_position=0)
         review_request_1.file_attachment_histories.add(history)
 
         form = UploadFileForm(review_request_2,
                               data={'attachment_history': history.pk},
-                              files={'path': file})
+                              files={'path': uploaded_file})
         self.assertFalse(form.is_valid())
 
     @add_fixtures(['test_users', 'test_scmtools'])
     def test_upload_file_revisions(self):
         """Testing uploading multiple revisions of a file"""
-        review_request = self.create_review_request(publish=True)
+        user = User.objects.create_user(username='testuser')
+        review_request = self.create_review_request(publish=True,
+                                                    target_people=[user])
         history = FileAttachmentHistory.objects.create(display_position=0)
         review_request.file_attachment_histories.add(history)
-        file = self.make_uploaded_file()
+        uploaded_file = self.make_uploaded_file()
 
         # Add a file with the given history
         form = UploadFileForm(review_request,
                               data={'attachment_history': history.pk},
-                              files={'path': file})
+                              files={'path': uploaded_file})
         self.assertTrue(form.is_valid())
         file_attachment = form.create()
         history = FileAttachmentHistory.objects.get(pk=history.pk)
@@ -144,11 +142,10 @@ class FileAttachmentTests(BaseFileAttachmentTestCase):
         self.assertEqual(history.display_position, 0)
 
         review_request.get_draft().publish()
-
         # Post an update
         form = UploadFileForm(review_request,
                               data={'attachment_history': history.pk},
-                              files={'path': file})
+                              files={'path': uploaded_file})
         self.assertTrue(form.is_valid())
         file_attachment = form.create()
         history = FileAttachmentHistory.objects.get(pk=history.pk)
@@ -161,7 +158,7 @@ class FileAttachmentTests(BaseFileAttachmentTestCase):
         # Post two updates without publishing the draft in between
         form = UploadFileForm(review_request,
                               data={'attachment_history': history.pk},
-                              files={'path': file})
+                              files={'path': uploaded_file})
         self.assertTrue(form.is_valid())
         file_attachment = form.create()
         history = FileAttachmentHistory.objects.get(pk=history.pk)
@@ -171,7 +168,7 @@ class FileAttachmentTests(BaseFileAttachmentTestCase):
 
         form = UploadFileForm(review_request,
                               data={'attachment_history': history.pk},
-                              files={'path': file})
+                              files={'path': uploaded_file})
         self.assertTrue(form.is_valid())
         file_attachment = form.create()
         history = FileAttachmentHistory.objects.get(pk=history.pk)
@@ -181,7 +178,7 @@ class FileAttachmentTests(BaseFileAttachmentTestCase):
 
         # Add another (unrelated) file to check display position
         form = UploadFileForm(review_request,
-                              files={'path': file})
+                              files={'path': uploaded_file})
         self.assertTrue(form.is_valid())
         file_attachment = form.create()
         self.assertEqual(file_attachment.attachment_revision, 1)
@@ -216,7 +213,7 @@ class FileAttachmentTests(BaseFileAttachmentTestCase):
         """Testing file attachment thumbnail generation for UTF-16 files"""
         filename = os.path.join(os.path.dirname(__file__),
                                 'testdata', 'utf-16.txt')
-        with open(filename) as f:
+        with open(filename, 'rb') as f:
             review_request = self.create_review_request(publish=True)
 
             file = SimpleUploadedFile(
@@ -249,6 +246,108 @@ class FileAttachmentTests(BaseFileAttachmentTestCase):
                 '\u23ab</pre><pre>                                           '
                 ' \u23aa\u23a2\u239c\u2502a\xb2+b\xb3 \u239f\u23a5\u23aa'
                 '</pre><pre>  \u2200x\u2208</pre></div></div>')
+
+
+class UserFileAttachmentTests(BaseFileAttachmentTestCase):
+    fixtures = ['test_users']
+
+    def test_user_file_add_file_after_create(self):
+        """Testing user FileAttachment create without initial file and
+        adding file through update
+        """
+        user = User.objects.get(username='doc')
+
+        form = UploadUserFileForm(files={})
+        self.assertTrue(form.is_valid())
+
+        file_attachment = form.create(user)
+        self.assertFalse(file_attachment.file)
+        self.assertEqual(file_attachment.user, user)
+
+        uploaded_file = self.make_uploaded_file()
+        form = UploadUserFileForm(files={
+            'path': uploaded_file,
+        })
+        self.assertTrue(form.is_valid())
+
+        file_attachment = form.update(file_attachment)
+
+        self.assertTrue(os.path.basename(file_attachment.file.name).endswith(
+            '__logo.png'))
+        self.assertEqual(file_attachment.mimetype, 'image/png')
+
+    def test_user_file_with_upload_file(self):
+        """Testing user FileAttachment create with initial file"""
+        user = User.objects.get(username='doc')
+        uploaded_file = self.make_uploaded_file()
+
+        form = UploadUserFileForm(files={
+            'path': uploaded_file,
+        })
+        self.assertTrue(form.is_valid())
+
+        file_attachment = form.create(user)
+
+        self.assertEqual(file_attachment.user, user)
+        self.assertTrue(os.path.basename(file_attachment.file.name).endswith(
+            '__logo.png'))
+        self.assertEqual(file_attachment.mimetype, 'image/png')
+
+    @add_fixtures(['test_site'])
+    def test_user_file_local_sites(self):
+        """Testing user FileAttachment create with local site"""
+        user = User.objects.get(username='doc')
+        local_site = LocalSite.objects.get(name='local-site-1')
+
+        form = UploadUserFileForm(files={})
+        self.assertTrue(form.is_valid())
+
+        file_attachment = form.create(user, local_site)
+
+        self.assertEqual(file_attachment.user, user)
+        self.assertEqual(file_attachment.local_site, local_site)
+
+    @add_fixtures(['test_site'])
+    def test_user_file_is_accessible_by(self):
+        """Testing user FileAttachment.is_accessible_by"""
+        creating_user = User.objects.get(username='doc')
+        admin_user = User.objects.get(username='admin')
+        same_site_user = User.objects.get(username='dopey')
+        different_site_user = User.objects.get(username='grumpy')
+
+        local_site = LocalSite.objects.get(name='local-site-1')
+        local_site.users.add(same_site_user)
+
+        form = UploadUserFileForm(files={})
+        self.assertTrue(form.is_valid())
+        file_attachment = form.create(creating_user, local_site)
+
+        self.assertTrue(file_attachment.is_accessible_by(admin_user))
+        self.assertTrue(file_attachment.is_accessible_by(creating_user))
+        self.assertFalse(file_attachment.is_accessible_by(AnonymousUser()))
+        self.assertFalse(file_attachment.is_accessible_by(same_site_user))
+        self.assertFalse(file_attachment.is_accessible_by(different_site_user))
+
+    @add_fixtures(['test_site'])
+    def test_user_file_is_mutable_by(self):
+        """Testing user FileAttachment.is_mutable_by"""
+        creating_user = User.objects.get(username='doc')
+        admin_user = User.objects.get(username='admin')
+        same_site_user = User.objects.get(username='dopey')
+        different_site_user = User.objects.get(username='grumpy')
+
+        local_site = LocalSite.objects.get(name='local-site-1')
+        local_site.users.add(same_site_user)
+
+        form = UploadUserFileForm(files={})
+        self.assertTrue(form.is_valid())
+        file_attachment = form.create(creating_user, local_site)
+
+        self.assertTrue(file_attachment.is_mutable_by(admin_user))
+        self.assertTrue(file_attachment.is_mutable_by(creating_user))
+        self.assertFalse(file_attachment.is_mutable_by(AnonymousUser()))
+        self.assertFalse(file_attachment.is_mutable_by(same_site_user))
+        self.assertFalse(file_attachment.is_mutable_by(different_site_user))
 
 
 class MimetypeTest(MimetypeHandler):
@@ -525,7 +624,8 @@ class DiffViewerFileAttachmentTests(BaseFileAttachmentTestCase):
         """Testing inline diff file attachments with newly added files"""
         # Set up the initial state.
         user = User.objects.get(username='doc')
-        review_request = ReviewRequest.objects.create(user, None)
+        review_request = self.create_review_request(submitter=user,
+                                                    target_people=[user])
         filediff = self.make_filediff(
             is_new=True,
             diffset_history=review_request.diffset_history)
@@ -533,10 +633,11 @@ class DiffViewerFileAttachmentTests(BaseFileAttachmentTestCase):
         # Create a diff file attachment to be displayed inline.
         diff_file_attachment = FileAttachment.objects.create_from_filediff(
             filediff,
-            filename='my-file',
+            orig_filename='my-file',
             file=self.make_uploaded_file(),
             mimetype='image/png')
         review_request.file_attachments.add(diff_file_attachment)
+        review_request.save()
         review_request.publish(user)
 
         # Load the diff viewer.
@@ -555,7 +656,7 @@ class DiffViewerFileAttachmentTests(BaseFileAttachmentTestCase):
         """Testing inline diff file attachments with modified files"""
         # Set up the initial state.
         user = User.objects.get(username='doc')
-        review_request = ReviewRequest.objects.create(user, None)
+        review_request = self.create_review_request(submitter=user)
         filediff = self.make_filediff(
             is_new=False,
             diffset_history=review_request.diffset_history)
@@ -566,13 +667,13 @@ class DiffViewerFileAttachmentTests(BaseFileAttachmentTestCase):
 
         orig_attachment = FileAttachment.objects.create_from_filediff(
             filediff,
-            filename='my-file',
+            orig_filename='my-file',
             file=uploaded_file,
             mimetype='image/png',
             from_modified=False)
         modified_attachment = FileAttachment.objects.create_from_filediff(
             filediff,
-            filename='my-file',
+            orig_filename='my-file',
             file=uploaded_file,
             mimetype='image/png')
         review_request.file_attachments.add(orig_attachment)
@@ -620,8 +721,9 @@ class SandboxTests(SpyAgency, BaseFileAttachmentTestCase):
 
         register_mimetype_handler(SandboxMimetypeHandler)
 
-        user = User.objects.create(username='reviewboard',
-                                   password='password', email='')
+        user = User.objects.create_user(username='reviewboard',
+                                        password='password',
+                                        email='reviewboard@example.com')
 
         review_request = self.create_review_request(submitter=user)
         self.file_attachment = self.create_file_attachment(

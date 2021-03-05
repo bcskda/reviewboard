@@ -7,7 +7,6 @@ from django.template.loader import render_to_string
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext as _
-from djblets.util.decorators import basictag
 
 from reviewboard.diffviewer.chunk_generator import DiffChunkGenerator
 
@@ -25,7 +24,7 @@ def highlightregion(value, regions):
     if not regions:
         return value
 
-    s = ''
+    html = []
 
     # We need to insert span tags into a string already consisting
     # of span tags. We have a list of ranges that our span tags should
@@ -50,33 +49,33 @@ def highlightregion(value, regions):
 
         if c == '<':
             if in_hl:
-                s += '</span>'
+                html.append('</span>')
                 in_hl = False
 
             k = value.find('>', i)
             assert k != -1
 
-            s += value[i:k + 1]
+            html.append(value[i:k + 1])
             i = k
         else:
             if not in_hl and region_start <= j < region_end:
-                s += '<span class="hl">'
+                html.append('<span class="hl">')
                 in_hl = True
 
             if c == '&':
                 k = value.find(';', i)
                 assert k != -1
 
-                s += value[i:k + 1]
+                html.append(value[i:k + 1])
                 i = k
                 j += 1
             else:
                 j += 1
-                s += c
+                html.append(c)
 
         if j == region_end:
             if in_hl:
-                s += '</span>'
+                html.append('</span>')
                 in_hl = False
 
             r += 1
@@ -89,10 +88,9 @@ def highlightregion(value, regions):
         i += 1
 
     if i + 1 < len(value):
-        s += value[i + 1:]
+        html.append(value[i + 1:])
 
-    return s
-highlightregion.is_safe = True
+    return mark_safe(''.join(html))
 
 
 extraWhitespace = re.compile(r'(\s+(</span>)?$| +\t)')
@@ -131,8 +129,7 @@ def _diff_expand_link(context, expandable, text, tooltip,
     })
 
 
-@register.tag
-@basictag(takes_context=True)
+@register.simple_tag(takes_context=True)
 def diff_expand_link(context, expanding, tooltip,
                      expand_pos_1=None, expand_pos_2=None, text=None):
     """Renders a diff expansion link.
@@ -155,8 +152,7 @@ def diff_expand_link(context, expanding, tooltip,
                              image_class)
 
 
-@register.tag
-@basictag(takes_context=True)
+@register.simple_tag(takes_context=True)
 def diff_chunk_header(context, header):
     """Renders a diff header as HTML.
 
@@ -219,9 +215,13 @@ def diff_lines(index, chunk, standalone, line_fmt, anchor_fmt='',
 
     for i, line in enumerate(lines):
         row_classes = []
+        header_1_classes = []
+        header_2_classes = []
         cell_1_classes = ['l']
         cell_2_classes = ['r']
         row_class_attr = ''
+        header_1_class_attr = ''
+        header_2_class_attr = ''
         cell_1_class_attr = ''
         cell_2_class_attr = ''
         line1 = line[2]
@@ -231,13 +231,15 @@ def diff_lines(index, chunk, standalone, line_fmt, anchor_fmt='',
         show_collapse = False
         anchor = None
 
+        if i == 0:
+            row_classes.append('first')
+
+        if i == num_lines - 1:
+            row_classes.append('last')
+
         if not is_equal:
             if i == 0:
-                row_classes.append('first')
                 anchor = '%s.%s' % (index, chunk_index)
-
-            if i == num_lines - 1:
-                row_classes.append('last')
 
             if line[7]:
                 row_classes.append('whitespace-line')
@@ -271,16 +273,19 @@ def diff_lines(index, chunk, standalone, line_fmt, anchor_fmt='',
                 moved_from_linenum, moved_from_first = moved_info['from']
                 is_moved_row = True
 
+                header_2_classes.append('moved-from')
                 cell_2_classes.append('moved-from')
 
                 if moved_from_first:
                     # This is the start of a new move range.
                     is_first_moved_row = True
+                    header_2_classes.append('moved-from-start')
                     cell_2_classes.append('moved-from-start')
                     moved_from = {
                         'class': 'moved-flag',
-                        'line': mark_safe(moved_from_linenum),
-                        'target': mark_safe(linenum2),
+                        'line': mark_safe('moved-from-%s'
+                                          % moved_from_linenum),
+                        'target': mark_safe('moved-to-%s' % linenum2),
                         'text': _('Moved from line %s') % moved_from_linenum,
                     }
 
@@ -288,16 +293,18 @@ def diff_lines(index, chunk, standalone, line_fmt, anchor_fmt='',
                 moved_to_linenum, moved_to_first = moved_info['to']
                 is_moved_row = True
 
+                header_1_classes.append('moved-to')
                 cell_1_classes.append('moved-to')
 
                 if moved_to_first:
                     # This is the start of a new move range.
                     is_first_moved_row = True
+                    header_1_classes.append('moved-to-start')
                     cell_1_classes.append('moved-to-start')
                     moved_to = {
                         'class': 'moved-flag',
-                        'line': mark_safe(moved_to_linenum),
-                        'target': mark_safe(linenum1),
+                        'line': mark_safe('moved-to-%s' % moved_to_linenum),
+                        'target': mark_safe('moved-from-%s' % linenum1),
                         'text': _('Moved to line %s') % moved_to_linenum,
                     }
 
@@ -316,6 +323,12 @@ def diff_lines(index, chunk, standalone, line_fmt, anchor_fmt='',
         if cell_2_classes:
             cell_2_class_attr = ' class="%s"' % ' '.join(cell_2_classes)
 
+        if header_1_classes:
+            header_1_class_attr = ' class="%s"' % ' '.join(header_1_classes)
+
+        if header_2_classes:
+            header_2_class_attr = ' class="%s"' % ' '.join(header_2_classes)
+
         anchor_html = ''
         begin_collapse_html = ''
         end_collapse_html = ''
@@ -325,6 +338,8 @@ def diff_lines(index, chunk, standalone, line_fmt, anchor_fmt='',
         context = {
             'chunk_index': chunk_index,
             'row_class_attr': row_class_attr,
+            'header_1_class_attr': header_1_class_attr,
+            'header_2_class_attr': header_2_class_attr,
             'cell_1_class_attr': cell_1_class_attr,
             'cell_2_class_attr': cell_2_class_attr,
             'linenum_row': line[0],

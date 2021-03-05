@@ -1,354 +1,87 @@
 @import (reference) "../defs.less";
 @import (reference) "../mixins/upload-diff.less";
-@import (reference) "@{STATIC_ROOT}djblets/css/mixins/markdown.less";
+@import (reference) "djblets/css/mixins/markdown.less";
 
 
 @img_base: '../../images';
 @djblets_img_base: '../../../djblets/images';
+
+@changedesc-bg: lighten(@review-request-bg, 5%);
+@floating-anchor-width: 8em;
 
 
 /****************************************************************************
  * Review-specific macros
  ****************************************************************************/
 
-/* Keep the label from shifting when the pencil icon is hidden/shown. */
-.inline-editor-label() {
-  display: block;
-  line-height: 16px;
-  vertical-align: top;
-}
-
-/* Adds a left-facing arrow to the left-hand side of a box. */
-.left-arrow-callout(@color) {
-  position: relative;
-
-  &:before, &:after {
-    position: absolute;
-    left: -19px;
-    top: 17px;
-    right: 100%;
-    border: 1px transparent solid;
-    content: " ";
-    display: block;
-    width: 0;
-    height: 0;
-  }
-
-  &:before {
-    border-right-color: @box-border-color;
-    border-width: 10px;
-  }
-
-  &:after {
-    border-width: 9px;
-    border-right-color: @color;
-    margin-top: 1px;
-    margin-left: 2px;
-  }
-}
-
-/* Changes the color of an existing callout arrow. */
-.left-arrow-callout-color(@color) {
-  &:after {
-    border-right-color: @color;
-  }
-}
-
 .review-comments-inline() {
-  &.draft {
-    dt label a {
-      color: #4e9a06;
-    }
-  }
+  .comment-author {
+    margin-bottom: 1em;
 
-  dl {
-    dt {
-      label {
-        .inline-editor-label();
+    label {
+      .inline-editor-label();
 
-        a {
-          color: #AB5603;
-          font-size: 1.1em;
-          font-weight: bold;
+      .avatar-container {
+        background: white;
+        border-radius: 50%;
+        display: inline-block;
+        overflow: hidden;
+        width: 32px;
+        height: 32px;
+      }
+
+      .user {
+        color: @review-comment-author-color;
+        font-size: 1.1em;
+        font-weight: bold;
+        text-decoration: none;
+      }
+
+      .user-reply-info {
+        display: inline-block;
+        overflow: hidden;
+
+        .timestamp {
+          color: #487858;
+          display: block;
           text-decoration: none;
-        }
 
-        .gravatar-container {
-          background: white;
-          .border-radius(50%);
-          display: inline-block;
-          overflow: hidden;
-          width: 32px;
-          height: 32px;
-        }
-
-        .user-reply-info {
-          display: inline-block;
-          overflow: hidden;
+          &:hover {
+            text-decoration: underline;
+          }
 
           time {
-            display: block;
+            vertical-align: middle;
           }
         }
       }
-
-      span {
-        color: #487858;
-        font-weight: normal;
-      }
     }
   }
-}
-
-/* Sets up an element to appear as a pop-up review request action menu. */
-.review-request-action-popup-menu() {
-  display: block !important;
-  visibility: hidden;
-  z-index: @z-index-menu;
-  .opacity(0);
-  .transition(visibility 0.1s, opacity 0.1s;);
-}
-
-
-/****************************************************************************
- * Actions
- ****************************************************************************/
-.actions-container {
-  background: @review-request-action-bg;
-  border: 1px @review-request-action-border-color solid;
-  border-bottom: 0;
-  overflow: hidden;
-  .border-radius(@box-inner-border-radius @box-inner-border-radius 0 0);
-  .box-sizing(border-box);
 
   /*
-   * This adds some content to the actions list, ensuring that even if it's
-   * empty, there will be a suitable height.
+   * When there's a draft present, modify some colors so that it's apparent
+   * that the comments are drafts, and modify margins so that the inline editor
+   * opens without any jumps.
    */
-  .actions:before {
-    content: ".";
-    float: left;
-    visibility: hidden;
-    padding: @review-request-action-padding-vert 0;
-  }
-}
+  &.draft {
+    @textarea-offset-vert: (@textarea-editor-margin-top +
+                            @textarea-editor-padding +
+                            @textarea-border-size);
+    @textarea-offset-horiz: (@textarea-editor-padding +
+                             @textarea-border-size);
 
+    .comment-author {
+      margin-bottom: @textarea-offset-vert + 1em;
 
-.actions {
-  .box-sizing(border-box);
-  float: right;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  white-space: nowrap;
-
-  &.actions-left {
-    float: left;
-
-    #hide-review-request-link {
-      padding: 0.6em 0.6em 0.3em 0.6em;
-    }
-  }
-
-  a {
-    color: black;
-    cursor: pointer;
-    display: block;
-    text-decoration: none;
-    padding: @review-request-action-padding-vert
-             @review-request-action-padding-horiz;
-  }
-
-  img {
-    vertical-align: middle;
-  }
-
-  li {
-    float: left;
-    margin: 0;
-    padding: 0;
-
-    .on-mobile-medium-screen-720({
-      /* Give some extra room for tapping. */
-      padding: @review-request-action-mobile-padding;
-    });
-
-    &:hover {
-      background-color: @review-request-action-hover-bg;
-    }
-
-    &:active {
-      background-color: @review-request-action-active-bg;
-    }
-
-    &.has-menu {
-      &:hover > ul {
-        visibility: visible;
-        .opacity(100);
-      }
-
-      > .menu {
-        .review-request-action-popup-menu();
-
-        .on-mobile-medium-screen-720({
-          margin-left: -@review-request-action-mobile-padding;
-          margin-top: @review-request-action-mobile-padding;
-        });
+      label a {
+        color: @review-comment-author-color-draft;
       }
     }
 
-    &.action-view-diff {
-      background: #FFFFEE;
-      font-size: 105%;
-
-      a {
-        padding-left: 1.5em;
-        padding-right: 1.5em;
-      }
+    .text-editor {
+      margin: -(@textarea-offset-vert - 10px) -@textarea-offset-horiz 0;
     }
   }
-
-  .menu {
-    background: @review-request-action-menu-bg;
-    border: 1px @review-request-action-menu-border-color solid;
-    float: none;
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    position: absolute;
-    z-index: @z-index-menu;
-    .border-radius(0 0 @box-border-radius @box-border-radius);
-    .box-shadow(@box-shadow);
-
-    li {
-      background: @review-request-action-bg;
-      border: 0;
-      float: none;
-      margin: 0;
-      padding: 0;
-
-      .on-mobile-medium-screen-720({
-        /* Give some extra room for tapping. */
-        padding: @review-request-action-mobile-padding;
-      });
-
-      &:last-child {
-        .border-radius(0 0 @box-border-radius @box-border-radius);
-      }
-
-      &:hover {
-        background-color: @review-request-action-menu-item-hover-bg;
-      }
-
-      a {
-        color: black;
-        border: 0;
-        display: block;
-        margin: 0;
-        padding: 8px 10px;
-        text-decoration: none;
-      }
-    }
-  }
-}
-
-.actions-right-container {
-  > li {
-    &:hover {
-      /* Don't let the action bar's background change by default. */
-      background: inherit;
-
-      .on-mobile-medium-screen-720({
-        background: @review-request-action-hover-bg;
-      });
-    }
-
-    & > .actions-right {
-      .on-mobile-medium-screen-720({
-        /* Mimic the styling of a standard menu, on mobile only. */
-        .actions > .menu();
-        .review-request-action-popup-menu();
-
-        background: @review-request-action-bg;
-        display: none;
-        margin-left: 0;
-        position: absolute;
-        left: 0;
-        width: 100%;
-        white-space: normal;
-      });
-
-      > li {
-        .on-mobile-medium-screen-720({
-          background: transparent;
-          .border-radius(0);
-          display: inline-block;
-          padding: @review-request-action-mobile-padding;
-          text-align: left;
-        });
-
-        &:last-child {
-          .border-radius(0 @box-inner-border-radius 0 0);
-
-          .on-mobile-medium-screen-720({
-            .border-radius(0);
-          });
-        }
-      }
-    }
-  }
-
-  .mobile-actions-menu-label {
-    display: none;
-
-    .on-mobile-medium-screen-720({
-      display: inline-block;
-    });
-  }
-}
-
-.actions.page-tabs {
-  background: @review-request-action-bg;
-  border: 1px @review-request-border-color solid;
-  border-bottom-width: 0;
-  .border-radius(@box-border-radius @box-border-radius 0 0);
-  margin-left: 1.5em;
-  overflow: hidden;
-
-  .review-ui-box & {
-    .active {
-      background: @review-ui-header-bg;
-    }
-  }
-
-  li {
-    border-bottom: 1px @review-request-action-border-color solid;
-    min-width: 6em;
-    text-align: center;
-
-    &.active {
-      background: @review-request-bg-gradient-start;
-      border: 1px @review-request-border-color solid;
-      border-bottom-color: transparent;
-      border-top: 0;
-
-      &:first-child {
-        border-left: 0;
-      }
-
-      &:last-child {
-        border-right: 0;
-      }
-    }
-  }
-}
-
-.review-request-header {
-  border-bottom: 1px @review-request-action-border-color solid;
-
-  .on-mobile-medium-screen-720({
-    text-align: center;
-  });
 }
 
 
@@ -359,14 +92,15 @@
   border: @textarea-border;
   height: auto;
   margin: @textarea-editor-margin;
+  cursor: text;
 
   .CodeMirror-lines {
     padding: @textarea-editor-padding;
   }
 
   .CodeMirror-scroll {
-    overflow-y: hidden;
-    overflow-x: auto;
+    overflow-y: hidden !important;
+    overflow-x: auto !important;
   }
 
   pre {
@@ -386,10 +120,6 @@
   }
 }
 
-
-/****************************************************************************
- * Review Request Box
- ****************************************************************************/
 .markdown-info {
   color: blue;
   font-size: 8pt;
@@ -411,326 +141,28 @@
   }
 }
 
-.review-request {
-  /*
-   * Any changes to this need to be reflected in _resizeLayout in
-   * reviewRequestEditorView.js
-   */
-  @details-width: 300px;
-
-  background: none;
-  border: 0;
-
-  label {
-    color: @review-request-label-color;
-    font-weight: bold;
-  }
-
-  noscript form {
-    margin: 10px 5px 5px 5px;
-    text-align: right;
-  }
-
-  textarea {
-    border: @textarea-border;
-    height: 1.5em;
-    overflow: hidden;
-  }
-
-  .box-inner {
-    background-image: none;
-  }
-
-  .content {
-    padding: @box-padding;
-    position: relative;
-
-    &.sliding {
-      margin-top: -5px;
-    }
-
-    img {
-      border: none;
-    }
-
-    .field-container {
-      position: relative;
-
-      &>pre {
-        .pre-wrap;
-        background-color: #FFFFFF;
-        border: @textarea-border;
-        margin: @textarea-editor-margin;
-        padding: @textarea-editor-padding;
-      }
-    }
-  }
-
-  .content-divider {
-    border-top: 1px #C2C1B0 solid;
-  }
-
-  .inline-editor-form {
-    &.summary-editor {
-      margin-top: -2px;
-      margin-left: -3px;
-    }
-
-    input[type='text']:not(:focus) {
-      .box-shadow(0px 0px 4px rgba(255, 0, 0, .75));
-    }
-  }
-
-  .main {
-    background-color: @review-request-bg;
-    #gradient > .vertical(@review-request-bg-gradient-start,
-                          @review-request-bg-gradient-end);
-    border: 1px @review-request-border-color solid;
-    border-top: 0;
-    .border-radius(0 0 @box-border-radius @box-border-radius);
-    clear: both;
-    padding: 0.5em;
-  }
-
-  #required-field-legend {
-    color: darkRed;
-    font-weight: bold;
-    padding: @box-padding;
-  }
-
-  .header {
-    padding: @box-padding;
-  }
-
-  .star {
-    float: left;
-    margin-right: 10px;
-  }
-
-  #review_request_details {
-    border-spacing: 0px;
-    float: right;
-    width: @details-width;
-    padding: @box-padding;
-
-    .on-mobile-medium-screen-720({
-      /* Give the details pane its own full row above the textareas. */
-      float: none;
-      width: auto;
-    });
-
-    a {
-      color: @review-request-link-color;
-      text-decoration: none;
-    }
-
-    th {
-      color: #39350b;
-      font-weight: bold;
-      text-align: left;
-      white-space: nowrap;
-    }
-
-    tbody {
-      td, th {
-        padding: 0;
-        vertical-align: top;
-      }
-
-      th, td .field {
-        padding-top: 3px;
-      }
-
-      td {
-        padding-left: 1em;
-
-        span {
-          display: inline-block;
-          margin-right: 4px;
-          word-wrap: break-word;
-        }
-
-        .editicon {
-          margin-left: 0;
-        }
-      }
-
-      th {
-        padding-bottom: 1.5em;
-        padding-left: 1em;
-        text-align: right;
-        white-space: nowrap;
-      }
-    }
-
-    thead {
-      &.first-fieldset th {
-        padding-top: 0;
-      }
-
-      th {
-        color: @review-request-label-color;
-        font-size: 120%;
-        padding: 2em 0 1em 0;
-      }
-    }
-
-    #target_people .inactive {
-      text-decoration: line-through;
-    }
-
-    .buttons {
-      display: block;
-      margin-bottom: 1em;
-      padding: 6px 0 0 0;
-
-      input {
-        font-size: 11px;
-      }
-    }
-  }
-
-  #review_request_extra {
-    clear: both;
-
-    h3 {
-      color: @review-request-label-color;
-      font-size: 120%;
-      margin: 0;
-      padding: 0;
-    }
-
-    label.textarea-label {
-      display: block;
-      min-height: 16px;
-
-      img {
-        vertical-align: middle;
-      }
-    }
-  }
-
-  #review_request_main {
-    margin-right: (@details-width + 10px);
-    position: relative;
-
-    .on-mobile-medium-screen-720({
-      margin-right: 0;
-    });
-
-    label {
-      font-size: 120%;
-    }
-  }
-
-  #review-request-warning {
-    background-color: @review-request-warning-bg;
-    border: 1px solid @review-request-warning-border-color;
-    display: none;
-    font-weight: bold;
-    padding: 5px;
-    text-align: center;
-  }
-
-  #diff_revision {
-    font-weight: bold;
-    text-align: right;
-    vertical-align: bottom;
-  }
-
-  #status {
-    color: #39350b;
-    margin: 5px 0;
-  }
-
-  #summary_wrapper {
-    @line-height: 2.6em;
-
-    line-height: @line-height;
-    padding: 0;
-
-    .on-mobile-medium-screen-720({
-      margin-bottom: 1em;
-    });
-
-    label, #field_summary {
-      font-size: 14px;
-    }
-
-    label {
-      margin-right: 0.5em;
-
-      .on-mobile-medium-screen-720({
-        /* Hide the Summary label on mobile. */
-        display: none;
-      });
-    }
-
-    .rb-icon-edit {
-      vertical-align: text-bottom;
-    }
-
-    #field_summary {
-      display: inline;
-
-      .on-mobile-medium-screen-720({
-        font-size: 120%;
-      });
-
-      a {
-        color: black;
-        text-decoration: none;
-      }
-    }
-  }
-
-  .actions-container {
-    .star {
-      margin: 5px;
-    }
-  }
-
-  #updated_time, #created_time {
-    text-align: right;
-    vertical-align: bottom;
-  }
-
-  .editicon {
-    text-decoration: none;
-  }
-
-  .required-flag {
-    color: @required-flag-color;
-    font-size: 10px;
-    font-weight: bold;
-    padding: 0 2px;
-  }
-}
-
-#review_request_form {
-  input[type='text'], textarea {
-    width: 400px;
-  }
-}
-
 
 /****************************************************************************
  * Review UIs
  ****************************************************************************/
 .review-ui-box {
-  &.has-review-ui-box-content .actions-container {
-    .border-radius(@box-inner-border-radius @box-inner-border-radius 0 0);
-
+  &.has-review-ui-box-content .review-request-actions-container {
     .actions > li:last-child {
-      .border-radius(0 @box-inner-border-radius 0 0);
+      border-radius: 0 @box-inner-border-radius 0 0;
     }
   }
 
-  .actions-container {
-    .border-radius(@box-inner-border-radius);
+  &.has-prev-attachment .review-request {
+    margin-left: 1em;
+  }
 
+  &.has-next-attachment .review-request {
+    margin-right: 1em;
+  }
+
+  .actions-container {
     .actions > li:last-child {
-      .border-radius(0 @box-inner-border-radius @box-inner-border-radius 0);
+      border-radius: 0 @box-inner-border-radius @box-inner-border-radius 0;
     }
   }
 
@@ -751,8 +183,196 @@
       margin: 0;
       padding: 8px;
       font-size: 10pt;
+      line-height: 16px;
+
+      &.file-attachment-single-revision {
+        text-align: center;
+      }
     }
   }
+}
+
+.review-ui-next-attachment,
+.review-ui-prev-attachment {
+  background: @box-bg;
+  border: 1px solid @box-border-color;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+  padding: 2px;
+  position: fixed;
+  top: 50%;
+  transition: transform 0.3s, background 0.3s, margin 0.3s;
+  z-index: @z-index-base;
+
+  &:hover {
+    background: darken(@box-bg, 10%);
+    transform: translateY(-50%);
+  }
+
+  a {
+    color: black;
+    text-decoration: none;
+  }
+
+  .file-container {
+    display: inline-block;
+    float: none;
+    vertical-align: middle;
+  }
+}
+
+
+.review-ui-next-attachment {
+  border-right-width: 0;
+  border-radius: @box-border-radius 0 0 @box-border-radius;
+  margin-right: @page-container-padding;
+  right: -2px;
+  transform: translateY(-50%) translateX(100%);
+
+  &:hover {
+    margin-right: 0;
+  }
+}
+
+.review-ui-prev-attachment {
+  border-left-width: 0;
+  border-radius: 0 @box-border-radius @box-border-radius 0;
+  margin-left: @page-container-padding;
+  left: -2px;
+  transform: translateY(-50%) translateX(-100%);
+
+  &:hover {
+    margin-left: 0;
+  }
+}
+
+
+/****************************************************************************
+ * Entries (status updates, reviews, change descriptions)
+ ****************************************************************************/
+
+.review-request-page-entry {
+  clear: both;
+  margin: 2rem 0;
+
+  .on-mobile-medium-screen-720({
+    margin-top: 1rem;
+  });
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+
+  .collapse-button {
+    border: 1px #333333 solid;
+    cursor: pointer;
+    float: left;
+    margin-right: 0.5rem;
+    margin-top: -1px;
+    padding: 0;
+  }
+}
+
+.review-request-page-entry-contents {
+  background-color: @review-request-entry-base-bg;
+  border: 1px @box-border-color solid;
+  border-radius: @box-border-radius;
+  box-shadow: @box-shadow;
+
+  &.collapsed {
+    background-color: @review-request-entry-collapsed-bg !important;
+    background-image: none !important; // Override any gradients used.
+
+    .body,
+    .banners {
+      display: none;
+    }
+
+    .header {
+      border-radius: @box-border-radius;
+    }
+  }
+
+  .has-avatar & {
+    margin-left: 80px;
+    width: auto;
+
+    .left-arrow-callout(@review-request-entry-base-bg);
+
+    .on-mobile-medium-screen-720({
+      margin-left: 0;
+      margin-top: 1em;
+
+      &:after, &:before {
+        content: none;
+      }
+    });
+
+    &.collapsed {
+      .left-arrow-callout-color(@review-request-entry-collapsed-bg);
+    }
+  }
+
+  .header {
+    border-radius: @box-border-radius @box-border-radius 0 0;
+    padding: @review-request-entry-padding;
+
+    a {
+      color: black;
+      text-decoration: none;
+    }
+
+    .header-details {
+      line-height: 20px;
+      overflow: hidden;
+    }
+
+    .summary {
+      float: left;
+      font-size: 110%;
+      font-weight: bold;
+
+      .on-mobile-medium-screen-720({
+        float: none;
+      });
+
+      .review-request-page-entry-title {
+        vertical-align: middle;
+      }
+    }
+
+    .timestamp {
+      color: #555;
+      display: block;
+      text-align: right;
+
+      .on-mobile-medium-screen-720({
+        margin-top: 0.5rem;
+        text-align: left;
+      });
+
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+  }
+
+  .banner {
+    border-width: 0 0 1px 0;
+    box-sizing: border-box;
+    margin: 0;
+    padding: @review-request-entry-padding;
+
+    &.floating {
+      border-top: 0;
+      margin-top: 0;
+    }
+  }
+}
+
+.new-review-request-page-entry .review-request-page-entry-contents {
+  border-color: @review-request-entry-new-border-color;
+
+  .left-arrow-callout-border-color(@review-request-entry-new-border-color);
 }
 
 
@@ -760,32 +380,366 @@
  * Reviews
  ****************************************************************************/
 
-#reviews {
-  margin-left: @reviews-padding-horiz;
-  margin-right: @reviews-padding-horiz;
+.review.has-draft {
+  // Reviews with draft replies have a green header.
+  .review-request-page-entry-contents {
+    .left-arrow-callout-color(@draft-bg-color);
+  }
+
+  .header {
+    background: @draft-bg-color;
+  }
+
+  .review-request-page-entry-contents:not(.collapsed) .header {
+    /*
+     * When the box is expanded, there's @review-request-entry-padding space
+     * between the header and the banner. We take that space out of the header
+     * instead of the banner to ensure that nothing jumps when the banner is
+     * switching between fixed and floating modes.
+     */
+    padding-bottom: 0;
+  }
+}
+
+.review-comments {
+  border: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.review-comment-screenshot,
+.review-comment-file-attachment,
+.review-comment-diff {
+  background-color: @review-comment-filename-background-color;
+  border: 0px @review-comment-filename-border-color solid;
+
+  .diffrevision {
+    font-weight: normal;
+  }
+}
+
+.review-comment-screenshot,
+.review-comment-file-attachment{
+  border-width: 1px 0;
+  padding: 5px;
+
+  .filename {
+    color: black;
+    font-size: 120%;
+    font-weight: bold;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .thumbnail {
+    margin-top: 0.5em;
+  }
+
+  li:not(:first-child) > .review-comment-details > & {
+    margin-top: @review-comment-section-margin-top;
+  }
+}
+
+.review-comment-diff {
+  &.allow-transitions {
+    .sidebyside {
+      /*
+       * Set up some animations for the hover effects on diff fragments.
+       *
+       * When collapsed, the contents of the diff headers will be transparent,
+       * showing just a few pixels of the background to show that there's
+       * something there.
+       *
+       * When expanding, the contents will be fully opaque.
+       *
+       * Both are done as transitions and their states managed in JavaScript.
+       * The result is that the controls will appear to expand outward from the
+       * diff (using transforms, without impacting the layout of the rest of the
+       * page), with the contents fading in/out.
+       */
+      &,
+      thead,
+      .diff-header,
+      .diff-header td > div {
+        transition: all 0.3s linear;
+      }
+    }
+  }
+
+  th {
+    /*
+     * The line numbers aren't clickable in the comment fragments in reviews,
+     * so show a standard cursor instead of a pointer.
+     */
+    cursor: initial;
+  }
+
+  .sidebyside {
+    &:not(.has-diff-header-above) {
+      /*
+       * If there's no diff header above, then we won't have a file header
+       * that's retracted. In this case, we want to add back the margin that
+       * we'd normally have in a comment section.
+       */
+      margin-top: @review-comment-section-margin-top;
+    }
+
+    &:not(.has-diff-header-below) {
+      /*
+       * Diff comment sections don't have a bottom border. We leave it up to
+       * the diff headers to supply one normally. If there isn't a diff header
+       * below the diff, add our own border.
+       */
+      border-bottom: 1px @review-comment-filename-border-color solid;
+    }
+
+    &.collapsed .diff-header td > div {
+      opacity: 0;
+    }
+
+    &.expanded .diff-header td > div {
+      opacity: 1;
+    }
+
+    .filename-row th {
+      background: @review-comment-filename-background-color;
+
+      /*
+       * This replaces the border that would normally be at the top of
+       * .review-comment-diff. We put it here instead so that it will appear
+       * on the top of the header when it animates, instead of staying fixed
+       * above it.
+       */
+      border-top: 1px @review-comment-filename-border-color solid;
+
+      /*
+       * Normally the revision row has this border, but for diff fragments,
+       * we want to place it on the filename row.
+       */
+      border-bottom: 1px @diff-file-border-color solid;
+    }
+
+    .diff-header {
+      &-above {
+        transform-origin: bottom;
+      }
+
+      &-below {
+        transform-origin: top;
+      }
+
+      td > div {
+        overflow: hidden;
+      }
+    }
+
+    .first-comment-line {
+      td, th {
+        border-top: 1px black solid;
+      }
+    }
+
+    .last-comment-line {
+      td, th {
+        border-bottom: 1px black solid;
+      }
+    }
+  }
+
+  .diff-error tbody {
+    border: 1px @diff-error-border-color solid;
+  }
+}
+
+/*
+ * An anchor beside a review box.
+ *
+ * This is used to help generate a link to a particular comment or reply on
+ * a page. It will appear to the left of the review box, aligned with the
+ * linked item, when hovering over the item.
+ *
+ * Consumers need to call ``.setup-floating-anchor()`` on the container that
+ * should respond to the hover.
+ */
+.floating-anchor {
+  box-sizing: border-box;
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  text-align: right;
+  padding-top: 1em;
+  z-index: @z-index-deco;
+
+  a {
+    color: #BBB;
+    font-size: 120%;
+    padding: 1em;
+    text-decoration: none;
+
+    &:hover {
+      color: #888;
+    }
+  }
+}
+
+/**
+ * Set up the floating anchor for a parent container.
+ *
+ * Args:
+ *     container-offset-left (number):
+ *          An additional offset to get the floating anchor's right-hand
+ *          side to match the left-hand side of the review box. This should
+ *          be the value of any parent container's padding.
+ *
+ *     margin-left (number):
+ *          An additional margin to apply to the floating anchor. This is
+ *          there to help nudge based on a pixel amount (for use in the left
+ *          border for replies).
+ */
+.setup-floating-anchor(@container-offset-left: 0, @margin-left: 0) {
+  &:hover .floating-anchor {
+    display: block;
+  }
 
   .on-mobile-medium-screen-720({
-    margin: 0;
+    .floating-anchor {
+      /*
+       * On mobile, we're going to show this on the right-hand side of the box
+       * instead, optimistically.
+       */
+      left: auto;
+      right: 0;
+      padding-right: 0;
+      margin-left: 0;
+      width: auto;
+    }
   });
 
-  .box {
-    margin: 2em 0;
-    .left-arrow-callout(white);
+  .set-floating-anchor-offset(@container-offset-left, @margin-left);
+}
+
+/**
+ * Set the offset for an existing floating anchor.
+ *
+ * Args:
+ *     container-offset-left (number):
+ *         The new offset for the floating anchor.
+ *
+ *     margin-left (number):
+ *          An additional margin to apply to the floating anchor. This is
+ *          there to help nudge based on a pixel amount (for use in the left
+ *          border for replies).
+ */
+.set-floating-anchor-offset(@container-offset-left: 0, @margin-left: 0) {
+  .floating-anchor {
+    left: -@floating-anchor-width - @container-offset-left;
+    width: @floating-anchor-width + max(@container-offset-left, 0);
+    padding-right: max(@container-offset-left, 0);
+    margin-left: @margin-left;
 
     .on-mobile-medium-screen-720({
-      margin-top: 1em;
+      margin-right: -@container-offset-left;
     });
   }
+}
 
-  .box-container {
-    padding-left: 75px;
-    width: auto;
+.review-comment-details {
+  position: relative;
 
-    .on-mobile-medium-screen-720({
-      padding-left: 0;
-    });
+  .setup-floating-anchor(
+    @container-offset-left: @review-request-entry-link-offset,
+    @margin-left: @review-request-entry-link-margin-left);
+
+  .has-avatar & {
+    .set-floating-anchor-offset(
+      @container-offset-left: @review-request-entry-has-avatar-link-offset,
+      @margin-left: @review-request-entry-has-avatar-link-margin-left);
   }
 
+  .review-comment {
+    padding: @review-comment-padding;
+  }
+
+  &.comment-details-empty .review-comment {
+    padding: 0;
+  }
+}
+
+.review-comment-thread {
+  padding: 0 @review-comment-padding @review-comment-padding
+           @review-comment-padding;
+
+  .has-avatar & {
+    .reply-comments > li {
+      .set-floating-anchor-offset(
+          @container-offset-left: @review-comment-padding -
+                                  @review-request-entry-has-avatar-link-offset,
+          @margin-left: -@review-comment-border-left-size +
+                        @review-request-entry-has-avatar-link-margin-left);
+    }
+  }
+
+  .comment-text {
+    white-space: pre-wrap;
+  }
+
+  .controls {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    text-align: left;
+
+    a {
+      color: black;
+      display: inline-block;
+      text-decoration: none;
+      background: #ECECEC;
+      border: 1px #C3C3C3 solid;
+      margin-top: 2em;
+      padding: 0.6em 1em;
+      border-radius: @box-border-radius;
+
+      &:hover {
+        background: #F3F3F3;
+      }
+
+      .fa {
+        margin-right: 5px;
+      }
+    }
+
+    li {
+      display: inline;
+    }
+  }
+
+  .reply-comments {
+    margin: 0;
+    padding: 0;
+
+    > li {
+      border-left: @review-comment-border-left-size transparent solid;
+      list-style: none;
+      padding: 2em;
+      position: relative;
+
+      &.new-reply {
+        border-left-color: @review-request-entry-new-border-color;
+      }
+
+      .setup-floating-anchor(
+        @container-offset-left: @review-comment-padding +
+                                @review-request-entry-link-offset,
+        @margin-left: -@review-comment-border-left-size +
+                      @review-request-entry-link-margin-left);
+      .review-comments-inline();
+    }
+  }
+}
+
+#reviews {
   .box-statuses {
     float: left;
     text-align: center;
@@ -797,27 +751,27 @@
 
     .box-status {
       position: relative;
-      .transition(0.2s linear all);
+      transition: 0.2s linear all;
 
       &.has-issues {
-        .gravatar-container {
+        &.revoking-ship-it,
+        &.ship-it:hover {
+          .ship-it-label {
+            top: 23px;
+          }
+        }
+
+        .avatar-container {
           border-color: darken(@issue-opened-bg, 45%);
         }
       }
 
-      &.ship-it {
-        .gravatar-container {
-          border-color: #6ebf20;
-        }
-
-        .fix-it-label {
-          -webkit-transition-delay: 0.2s;
-          transition-delay: 0.2s;
-        }
+      &.ship-it .avatar-container {
+        border-color: #6ebf20;
       }
 
       &.ship-it.has-issues {
-        .gravatar-container {
+        .avatar-container {
           border-color: darken(@issue-opened-bg, 45%);
         }
 
@@ -826,7 +780,6 @@
         }
 
         .ship-it-label {
-          position: absolute;
           top: 3px;
           margin-left: 2px;
           padding-left: 2px;
@@ -834,15 +787,15 @@
         }
       }
 
-      .gravatar-container {
+      .avatar-container {
         background: white;
         border: 2px #CCC dotted;
-        .border-radius(50%);
+        border-radius: 50%;
         overflow: hidden;
         width: 48px;
         height: 48px;
-        margin: 0 5px;
-        .transition(border-color 0.4s ease-in-out);
+        margin: 0 9px;
+        transition: border-color 0.4s ease-in-out;
 
         .on-mobile-medium-screen-720({
           display: inline-block;
@@ -851,8 +804,7 @@
 
         img {
           border: 2px white solid;
-          .border-radius(50%);
-          .box-sizing(border-box);
+          box-sizing: border-box;
         }
       }
 
@@ -869,7 +821,7 @@
 
       label {
         border: 1px #888888 solid;
-        .border-radius(@box-border-radius);
+        border-radius: @box-border-radius;
         display: block;
         line-height: 1.5;
         margin-bottom: @page-container-padding;
@@ -877,325 +829,78 @@
         position: absolute;
         left: 0;
         top: 0;
-        width: 4.5em;
+        width: 5.5em;
 
         .on-mobile-medium-screen-720({
           margin-bottom: 0;
         });
 
+        &.fix-it-label,
+        &.ship-it-label {
+          -webkit-transition-delay: 0.2s;
+          transition-delay: 0.2s;
+        }
+
         &.ship-it-label {
           border: 1px darken(#aeff60, 40%) solid;
           background: #aeff60;
+          position: absolute;
 
-          /*
-           * NOTE: The ';' at the end here is intentional. It forces Less to
-           *       preserve the commas, rather than assuming they're separating
-           *       arguments to the mixin.
-           */
-          .transition(padding 0.2s ease-in-out,
+          transition: padding 0.2s ease-in-out,
                       top 0.2s ease-in-out,
-                      margin 0.2s ease-in-out
-                      ;);
+                      margin 0.2s ease-in-out,
+                      left 0.5s ease-in-out,
+                      opacity 0.8s ease;
+
+          .revoke-ship-it {
+            cursor: pointer;
+            font-size: 110%;
+            margin-left: 0.1em;
+            opacity: 0.35;
+            transition: opacity 0.2s ease;
+
+            &:hover {
+              opacity: 1;
+            }
+          }
         }
 
         &.fix-it-label {
           border: 1px darken(@issue-opened-bg, 50%) solid;
           background: @issue-opened-bg;
 
-          .transition(left 0.5s ease-in-out,
-                      opacity 0.8s ease
-                      ;);
+          transition: left 0.5s ease-in-out,
+                      opacity 0.8s ease;
+
+          .open-issue-count {
+            color: darkred;
+            display: block;
+          }
         }
       }
     }
-  }
-
-  > .changedesc,
-  > .review {
-    clear: both;
-  }
-}
-
-#reviews .box {
-  border: 0;
-
-  .on-mobile-medium-screen-720({
-    &:after, &:before {
-      content: none
-    }
-  });
-
-  &.collapsed {
-    .left-arrow-callout-color(#ECECEE);
-
-    .body {
-      display: none;
-    }
-
-    .box-inner {
-      background: #ECECEE;
-    }
-
-    .banner {
-      border-bottom: 0;
-      margin-bottom: 0;
-    }
-  }
-
-  .box-inner {
-    background: none;
-    min-height: 5em;
-    overflow: hidden;
-  }
-
-  .collapse-button {
-    border: 1px #333333 solid;
-    cursor: pointer;
-    float: left;
-    margin-right: 0.5em;
-    margin-top: -1px;
-    padding: 0;
   }
 }
 
 #reviews .review {
-  &.has-draft {
-    .box {
-      .left-arrow-callout-color(@draft-bg-color);
-    }
-
-    .header {
-      background: @draft-bg-color;
-    }
-  }
-
-  .banners {
-    .banner {
-      border-left: 0;
-      border-right: 0;
-      border-top: 0;
-      .box-sizing(border-box);
-
-      &.floating {
-        border-top: 0;
-        margin-top: 0;
-      }
-    }
-  }
-
   .body {
     clear: both;
 
     pre {
-      margin-bottom: 0;
-      .pre-wrap;
-    }
-
-    .comment-text:target {
-      background-color: #E7EDF3;
-      border: 1px solid @dark-blue;
-      padding: 1em;
-    }
-
-    .body_top, .body_bottom {
-      margin: 2em;
-    }
-  }
-
-  .body-top-comment-section,
-  .body-bottom-comment-section,
-  .comments > dd,
-  .review-comments > dd {
-    margin: 0 2em 4em 2em;
-
-    &:last-child {
-      margin-bottom: 2em;
-    }
-  }
-
-  .box {
-    background: white;
-    border: 0;
-
-    .box-main {
-      padding: 0;
-    }
-  }
-
-  .box-inner {
-    background: white;
-    border: 1px @review-box-border-color solid;
-  }
-
-  .controls {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    text-align: left;
-
-    a {
-      color: black;
-      display: inline-block;
-      text-decoration: none;
-      background: #ECECEC;
-      border: 1px #C3C3C3 solid;
-      margin-top: 1em;
-      padding: 0.6em 1em;
-      .border-radius(@box-border-radius);
-
-      &:hover {
-        background: #F3F3F3;
-      }
-
-      .fa {
-        margin-right: 5px;
-      }
-    }
-
-    li {
-      display: inline;
-    }
-  }
-
-  .comments, .review-comments {
-    border: 0;
-    margin: 0;
-    padding: 0;
-
-    /*
-     * Cover up the left and right borders we add for <dt> to get a clean
-     * rounded border. We don't want them sticking out of the box.
-     */
-    overflow: hidden;
-
-    & > dd {
-      margin-top: 2em;
-    }
-
-    & > dt {
-      thead th {
-        font-weight: normal;
-      }
-    }
-
-    .comment_container {
-      border-top: 1px #C0C0C0 solid;
-      border-bottom: 1px #C0C0C0 solid;
-    }
-
-    .filename a {
-      color: black;
-      font-weight: bold;
-    }
-
-    .file-attachment {
-      background: #F0F0F0;
-      border-bottom: 1px #C0C0C0 solid;
-      padding: 5px;
-
-      .file-attachment-comment-header {
-        font-size: 120%;
-        white-space: nowrap;
-
-        a {
-          text-decoration: none;
-        }
-
-        img {
-          padding-right: 10px;
-          vertical-align: middle;
-        }
-
-        .caption {
-          color: black;
-          margin: 5px 0 0 32px;
-        }
-
-        .filename {
-          color: black;
-          font-weight: bold;
-          margin: 0;
-          vertical-align: middle;
-        }
-      }
-
-      .thumbnail {
-        margin-top: 0.5em;
-      }
-    }
-
-    .screenshot {
-      background: #F0F0F0;
-      border: 1px #C0C0C0 solid;
-      font-size: 120%;
-
-      img {
-        padding: 5px;
-      }
-
-      .filename {
-        display: block;
-        margin: 0;
-        padding: 5px 10px;
-      }
-    }
-
-    .sidebyside {
-      th {
-        /*
-         * The line numbers aren't clickable in the comment fragments in
-         * reviews, so show a standard cursor instead of a pointer cursor.
-         */
-        cursor: initial;
-      }
-
-      .filename-row th {
-        background: #F0F0F0;
-      }
-    }
-  }
-
-  .diff-error tbody {
-    border: 1px @diff-error-border-color solid;
-  }
-
-  .reply-comments {
-    margin: 3em 0 2em 0;
-    padding: 0;
-
-    &>li {
-      display: inline;
-
-      .review-comments-inline();
-
-      dl {
-        /*
-         * Set a border-bottom to prevent a bug in IE where, without a
-         * border-bottom, the content of the dl will shift left by the
-         * border-left size for every following item.
-         */
-        border-bottom: 1px transparent solid;
-        margin: 4em 0 2em 0;
-        padding: 0;
-
-        dd {
-          margin-left: 0;
-        }
-      }
+      white-space: pre-wrap;
     }
   }
 }
 
 #view_controls {
   list-style: none;
-  margin: 1em 0;
-  padding: 1em;
+  margin: 2em 0;
   text-align: center;
 
   a {
     background: #E0E0E0;
     border: 1px #C3C3C3 solid;
-    .border-radius(@box-border-radius);
+    border-radius: @box-border-radius;
     color: black;
     display: inline-block;
     padding: 0.6em 1em;
@@ -1218,12 +923,11 @@
 }
 
 .sidebyside.loading {
-  /* Helps us better keep the size, as long as the comment is within a chunk. */
-  padding: 2px 2px 1px 2px;
-  width: 100%;
-
   tbody {
     background-color: #F3F3F3;
+
+    // Helps us better keep the size, as long as the comment is within a chunk.
+    padding: 2px 2px 1px 2px;
 
     td {
       padding: 4px;
@@ -1237,27 +941,19 @@
 /****************************************************************************
  * Change Descriptions
  ****************************************************************************/
-#field_changedescription {
-  .pre-wrap;
-  background-color: @textarea-editor-background;
-  border: @textarea-border;
-  margin: @textarea-editor-margin;
-  padding: @textarea-editor-padding;
-}
 
 .changedesc {
-  &.box {
-    background-color: #fefadf;
-    #gradient > .vertical(lighten(@review-request-bg, 5%), @review-request-bg);
+  .review-request-page-entry-contents {
 
-    .box-inner {
-      border: 1px @review-request-border-color solid;
-    }
+    background-color: @changedesc-bg;
+    #gradient > .vertical(@changedesc-bg, @review-request-bg);
+
+    .left-arrow-callout-color(@changedesc-bg);
   }
 
-  .body {
+  .changed-fields {
     clear: both;
-    padding: @box-padding;
+    padding: @review-request-entry-padding;
 
     &>ul {
       list-style: none;
@@ -1286,7 +982,7 @@
     h3 {
       color: @review-request-label-color;
       font-size: 110%;
-      margin: 1em 0 0.5em 0;
+      margin: 0;
       padding: 0;
 
       &.status {
@@ -1314,7 +1010,7 @@
       border: @textarea-border;
       padding: @textarea-editor-padding;
       font-size: 9pt;
-      .pre-wrap;
+      white-space: pre-wrap;
     }
 
     /*
@@ -1387,7 +1083,13 @@
 
     /* The "Change Summary" section. */
     .changedesc-text {
-      margin-bottom: 2em;
+      margin: @textarea-editor-margin-top 0 1.5rem;
+      padding: @textarea-editor-padding;
+      overflow: hidden;
+
+      .codehilite {
+        .flush-codehilite();
+      }
 
       &:last-child {
         margin-bottom: 0;
@@ -1406,19 +1108,38 @@
         text-decoration: underline;
       }
 
+      p {
+        padding-top: 2px;
+        padding-bottom: 2px;
+      }
+
       pre {
         background: none;
         border: 0;
         margin: 0;
         padding: 0;
-        .pre-wrap;
+        white-space: pre-wrap;
       }
 
       td {
         font-family: @textarea-font-family;
-        padding: 2px 4px;
+        padding: 0 4px;
         vertical-align: top;
-        .pre-wrap;
+        white-space: pre-wrap;
+
+        .codehilite {
+          border-radius: 0;
+          border-left: 0;
+          border-right: 0;
+
+          // Make this flush with the sides of the row.
+          margin: 0 -4px;
+
+          pre:empty {
+            /* Give this a reasonable height so it's not just blank. */
+            height: 1rem;
+          }
+        }
       }
 
       .delete {
@@ -1545,7 +1266,7 @@
       });
 
       h3 {
-        margin: 2px 1em 0 0;
+        margin: 0 1em 0 0;
         padding: 0;
         text-align: right;
 
@@ -1605,45 +1326,9 @@
   }
 }
 
-.box .header {
-  .border-radius(@box-border-radius @box-border-radius 0 0);
-  padding: 9px;
-
-  a {
-    color: black;
-    text-decoration: none;
-  }
-
-  .header-details {
-    overflow: hidden;
-  }
-
-  .reviewer {
-    float: left;
-    font-size: 110%;
-    font-weight: bold;
-    padding-top: 1px;
-
-    .on-mobile-medium-screen-720({
-      float: none;
-    });
-
-    a {
-      position: relative;
-    }
-  }
-
-  .posted_time {
-    color: #555;
-    text-align: right;
-    padding-top: 2px;
-
-    .on-mobile-medium-screen-720({
-      margin-top: 0.5em;
-      text-align: left;
-    });
-  }
-
+.changedesc-status-updates {
+  background-color: white;
+  border-radius: 0 0 @box-border-radius @box-border-radius;
 }
 
 
@@ -1656,8 +1341,8 @@
   border-top: 1px #888866 solid;
   border-left: 1px #888866 solid;
   bottom: 0;
-  .border-radius(10px 0 0 0);
-  .box-shadow(-1px -1px 2px rgba(0, 0, 0, 0.15));
+  border-radius: 10px 0 0 0;
+  box-shadow: -1px -1px 2px rgba(0, 0, 0, 0.15);
   font-size: 110%;
   padding: 1em;
   position: fixed;
@@ -1676,11 +1361,20 @@
 
 
 /****************************************************************************
- * Review Form
+ * Review Dialog
  ****************************************************************************/
 #review-form {
+  @review-dialog-padding: 20px;
+
   overflow: auto;
-  padding: 10px;
+  margin: 0;
+  padding: @review-dialog-padding;;
+
+  label {
+    color: black;
+    font-weight: bold;
+    margin-top: 10px;
+  }
 
   .add-link {
     font-size: 110%;
@@ -1690,41 +1384,71 @@
     }
   }
 
-  label {
-    color: black;
-    font-weight: bold;
-    margin-top: 10px;
+  .delete-comment {
+    color: #000000;
   }
 
-  dt label {
+  .comment-label {
     color: #AB5603;
     font-size: 1.1em;
     font-weight: bold;
+    margin-bottom: 2em;
     text-decoration: none;
+
+    .inline-editor-label();
   }
 
-  .comment-text-field > .edit-field {
-    margin: 1em 0;
+  .comment-text-field {
+    margin-bottom: 1em;
+  }
 
-    .comment-text-field {
-      label {
-        .inline-editor-label();
-      }
-    }
+  .rich-text {
+    margin-bottom: 2em;
+  }
+
+  .text-editor {
+    width: inherit;
   }
 
   #review-form-comments {
     background: none;
+    position: relative;
 
     pre {
-      .pre-wrap;
+      white-space: pre-wrap;
     }
 
-    .spinner {
-      font-size: 20px;
+    .diffrevision {
+      font-weight: normal;
     }
 
-    .comments {
+    .file-attachment {
+      background: @review-comment-filename-background-color;
+      border-color: @review-comment-filename-border-color;
+      border-width: 1px 0;
+      border-style: solid;
+      margin: 0 -@review-dialog-padding;
+      padding: 5px;
+
+      .diffrevision,
+      .filename {
+        font-size: 120%;
+      }
+
+      .filename {
+        font-weight: bold;
+
+        a {
+          color: black;
+        }
+      }
+
+      .thumbnail {
+        margin-top: 1em;
+      }
+    }
+
+    .review-comments {
       list-style: none;
       margin: 0;
       padding: 0;
@@ -1733,18 +1457,65 @@
         margin: 2em 0;
         padding: 0;
 
-        .edit-fields {
-          margin-left: 2em;
-        }
-
+        .review-comments-inline();
       }
     }
 
-    .review-comments-inline();
-
-    dd {
-      margin: 0;
+    .review-dialog-comment-diff {
+      margin: 0 -@review-dialog-padding;
     }
+
+    .sidebyside {
+      border-color: @review-comment-filename-border-color;
+      border-width: 1px 0;
+      border-style: solid;
+
+      .filename-row th {
+        background: @review-comment-filename-background-color;
+        border-bottom: 1px @review-comment-filename-border-color solid;
+      }
+    }
+
+    .spinner {
+      font-size: 20px;
+    }
+
+    .delete-comment {
+      margin-left: 0.5em;
+      font-size: 1.25em;
+      line-height: normal;
+    }
+
+    .editicon {
+      margin-left: 0.5em;
+    }
+  }
+}
+
+#review-form-modalbox {
+  .modalbox-buttons {
+    left: 0;
+
+    .review-dialog-buttons-left {
+      /*
+       * We're only absolutely positioning the buttons-left and not
+       * buttons-right. This way, buttons-right dictates the height, and
+       * buttons-left is able to fit in on the same row.
+       */
+      position: absolute;
+      left: 0;
+    }
+
+    .on-mobile-medium-screen-720({
+      .review-dialog-buttons-left {
+        position: relative;
+      }
+
+      .review-dialog-buttons-left,
+      .review-dialog-buttons-right {
+        display: inline;
+      }
+    });
   }
 }
 
@@ -1773,14 +1544,14 @@
     @file-attachment-caption-height: 31px;
 
     border: 1px @file-attachment-border-color solid;
+    box-shadow: @box-shadow;
+    box-sizing: border-box;
     display: block;
     position: relative;
     margin: 1em 1.5em 0.5em 0;
     max-width: @file-attachment-width;
-    .transition(0.2s opacity linear);
+    transition: 0.2s opacity linear;
     width: @file-attachment-width;
-    .box-shadow(@box-shadow);
-    .box-sizing(border-box);
 
     .on-mobile-medium-screen-720({
       margin: 1.5em 0 0 0;
@@ -1830,8 +1601,8 @@
     .file-actions {
       background-color: @file-attachment-overlay-bg;
       border: 1px @file-attachment-border-color solid;
-      .box-shadow(@box-shadow);
-      .box-sizing(border-box);
+      box-shadow: @box-shadow;
+      box-sizing: border-box;
       height: @file-attachment-height - @file-attachment-caption-height;
       list-style: none;
       margin: 0;
@@ -1870,11 +1641,11 @@
       }
 
       .thumbnail-properties () {
+        box-sizing: border-box;
         max-height: @file-attachment-height;
         max-width: 100%;
         margin: 0;
         padding: 0;
-        .box-sizing(border-box);
       }
 
       .file-thumbnail-overlay {
@@ -1916,11 +1687,11 @@
     .file-caption-container {
       @file-caption-padding: 30px;
 
-      .box-sizing(border-box);
-      .opacity(90);
+      opacity: 0.9;
       background-color: @file-attachment-overlay-bg;
       border-top: 1px @file-attachment-overlay-border-color solid;
       bottom: 0;
+      box-sizing: border-box;
       line-height: 2.5em;
       padding: 0 @file-caption-padding;
       position: absolute;
@@ -1942,7 +1713,7 @@
 
       .file-caption {
         .ellipsize();
-        .opacity(100);
+        opacity: 1;
         line-height: @file-attachment-caption-height;
         height: @file-attachment-caption-height;
         text-shadow: 0px 0px 2px white;
@@ -1954,21 +1725,21 @@
            */
           @buttons-padding-vert: 5px;
 
-          position: absolute;
-          padding: @buttons-padding-vert 0;
 
           /* Line up with .file's side borders. */
           margin: 0 0 0 (-1px - @file-caption-padding);
 
-          text-align: center;
           background: darken(@file-attachment-bg, 5%);
           border: 1px @file-attachment-border-color solid;
           border-top: 0;
+          border-radius: 0 0 @box-border-radius @box-border-radius;
+          box-shadow: @box-shadow;
+          box-sizing: border-box;
           display: block;
+          padding: @buttons-padding-vert 0;
+          position: absolute;
+          text-align: center;
           width: @file-attachment-width;
-          .border-radius(0 0 @box-border-radius @box-border-radius);
-          .box-sizing(border-box);
-          .box-shadow(@box-shadow);
           z-index: @z-index-deco;
         }
       }
@@ -1976,12 +1747,15 @@
       .inline-editor-form > input[type='text'] {
         background: transparent;
         border: 0;
+        box-sizing: border-box;
         font-family: inherit;
         font-size: inherit;
         height: @file-attachment-caption-height;
         margin: 0;
-        padding-top: 0;
         padding-bottom: 0;
+        padding-top: 0;
+        text-align: inherit;
+        vertical-align: bottom;
 
         /*
          * The 4px is needed to align the input with the text. It matches
@@ -1989,9 +1763,6 @@
          */
         padding: 0 @edit-icon-margin 0 0;
 
-        text-align: inherit;
-        vertical-align: bottom;
-        .box-sizing(border-box);
 
         &:focus {
           outline: 0;
@@ -2003,7 +1774,7 @@
          */
         &:not(:focus) {
           background: rgba(255, 0, 0, 0.15);
-          .box-shadow(none);
+          box-shadow: none;
         }
 
         &::-ms-clear {
@@ -2030,7 +1801,7 @@
   border: 1px #999999 solid;
   border-top: 1px #CCCCCC solid;
   padding: 2px 8px;
-  .border-radius(0 0 @box-border-radius @box-border-radius);
+  border-radius: 0 0 @box-border-radius @box-border-radius;
 
   img {
     vertical-align: bottom;
@@ -2046,9 +1817,10 @@
   max-width: 400px;
   min-width: 130px;
   text-align: center;
+  overflow: hidden;
   vertical-align: middle;
   position: relative;
-  .border-radius(@box-border-radius);
+  border-radius: @box-border-radius;
 
   &:hover {
     background-color: #F6F6F6;
@@ -2066,16 +1838,16 @@
   .image {
     border: 1px #999999 solid;
     border-bottom: 0;
+    border-radius: @box-border-radius @box-border-radius 0 0;
     cursor: pointer;
     height: 100px;
     line-height: 100px;
     margin: 0 auto;
     vertical-align: bottom;
-    .border-radius(@box-border-radius @box-border-radius 0 0);
 
     img {
+      border-radius: @box-inner-border-radius @box-inner-border-radius 0 0;
       vertical-align: middle;
-      .border-radius(@box-inner-border-radius @box-inner-border-radius 0 0);
     }
   }
 }
@@ -2099,15 +1871,21 @@
 /****************************************************************************
  * List of Attached Files
  ****************************************************************************/
+#file-list-container.dnd-overlay-visible {
+  display: block !important;
+  margin: 0;
+
+  /*
+   * If there are no file attachments present when showing the drag and drop
+   * overlay, this will default to being very short. Force it to be a minimum
+   * height to give it enough heft to be a useful drop point.
+   */
+  min-height: 64px;
+}
+
 #file-list {
   margin: 0;
   padding: 0;
-
-  &.dragover {
-    border: 2px green dashed;
-    display: block;
-    margin: 0;
-  }
 
   /*
    * When hovering over a thumbnail, fade out all the other thumbnails, to both
@@ -2130,8 +1908,8 @@
  ****************************************************************************/
 .comment-dlg {
   border: 1px @comment-dlg-border-color solid;
-  .border-radius(@box-border-radius);
-  .box-shadow(@box-shadow);
+  border-radius: @box-border-radius;
+  box-shadow: @box-shadow;
   cursor: default;
   margin-top: 8px;
   overflow: hidden;
@@ -2261,7 +2039,7 @@
         }
 
         pre {
-          .pre-wrap;
+          white-space: pre-wrap;
           font-size: 90%;
         }
       }
@@ -2285,12 +2063,14 @@
 .issue-state {
   @issue-state-height: 26px;
 
+  border: 1px transparent solid;
   font-weight: bold;
   line-height: @issue-state-height;
   margin-bottom: 2em;
   min-height: @issue-state-height;
   padding: 0.6em;
-  .transition(0.1s linear all);
+  transition: 0.1s linear all;
+  visibility: hidden;
 
   input, .back-to-issue-summary {
     /*
@@ -2310,9 +2090,13 @@
     margin: 0 0.2em;
   }
 
+  &.dropped, &.open, &.resolved, &.verifying-resolved, &.verifying-dropped {
+    visibility: visible;
+  }
+
   &.dropped {
     background: @issue-discarded-bg;
-    border: 1px @issue-discarded-border-color solid;
+    border-color: @issue-discarded-border-color;
 
     .back-to-issue-summary, .back-to-issue-summary:visited {
       color: @issue-discarded-link-color;
@@ -2321,7 +2105,7 @@
 
   &.open {
     background: @issue-opened-bg;
-    border: 1px @issue-opened-border-color solid;
+    border-color: @issue-opened-border-color;
 
     .back-to-issue-summary, .back-to-issue-summary:visited {
       color: @issue-opened-link-color;
@@ -2330,10 +2114,20 @@
 
   &.resolved {
     background: @issue-resolved-bg;
-    border: 1px @issue-resolved-border-color solid;
+    border-color: @issue-resolved-border-color;
 
     .back-to-issue-summary, .back-to-issue-summary:visited {
       color: @issue-resolved-link-color;
+    }
+  }
+
+  &.verifying-resolved,
+  &.verifying-dropped {
+    background: @issue-verifying-bg;
+    border-color: @issue-opened-border-color;
+
+    .back-to-issue-summary, .back-to-issue-summary:visited {
+      color: @issue-opened-link-color;
     }
   }
 
@@ -2383,58 +2177,52 @@
 /****************************************************************************
  * Banners
  ****************************************************************************/
-#discard-banner,
-#submitted-banner {
-  background: #E0E0E0;
-  border: 1px #808080 solid;
-}
-
-#draft-banner,
-#discard-banner,
-#submitted-banner {
-  border-top: 0;
-  border-left: 0;
-  border-right: 0;
-  .box-shadow(@box-shadow);
-  margin-top: -@page-container-padding;
-  margin-left: -@page-container-padding;
-  margin-right: -@page-container-padding;
-  margin-bottom: @page-container-padding;
-  padding: @page-container-padding;
-
-  .interdiff-link {
-    margin-top: 1em;
-  }
-
-  .on-mobile-medium-screen-720({
-    .banner-actions {
-      margin-bottom: 2em;
-    }
-  });
-
-  p label {
-    .inline-editor-label();
-    padding-top: 1em
-  }
-
-  &>p {
-    margin: 1em 0 0 0;
-  }
-}
-
 #review-banner {
-  padding-bottom: 4em;
+  overflow: hidden;
+
+  &.hidden {
+    max-height: 0;
+    visibility: hidden;
+
+    .banner {
+      /*
+       * Instead of hiding the banner, we keep the position off-screen by
+       * default using a transform. This makes it easy to animate it on-screen
+       * when putting it in the "shown" state.
+       */
+      transform: translateY(-100%);
+    }
+  }
+
+  &.ui-ready {
+    transition: max-height 0.3s linear, visibility 0.3s linear;
+
+    .banner {
+      /*
+       * We only set the position as fixed when the UI is ready (JavaScript
+       * has processed things). The reason for this is that when the page is
+       * loading, we want the #review-banner to have the same height as the
+       * draft banner, but the JavaScript wouldn't have executed yet, so it
+       * wouldn't be able to force that height. So instead, we leave the
+       * banner with a normal position, impacting #review-banner's height,
+       * and ensuring the page doesn't jump. Then we convert it to fixed once
+       * we've rendered everything.
+       */
+      position: fixed;
+      left: 0;
+      top: 0;
+      transition: transform 0.3s linear;
+    }
+  }
 
   .banner {
     border-left: 0;
     border-right: 0;
     border-top: 0;
-    left: 0;
-    position: fixed;
-    top: 0;
+    box-shadow: @box-shadow;
+    margin: 0;
     width: 100%;
     z-index: @z-index-banner;
-    .box-shadow(@box-shadow);
   }
 }
 
@@ -2460,27 +2248,41 @@
       padding: 0;
 
       > li {
-        background-color: #a1c0e3;
-        border-bottom: 1px #5170b3 solid;
+        background-color: @comments-tooltip-background;
+        border-bottom: 1px @comments-tooltip-border-color solid;
         margin: 0;
-        padding: 5px;
+        padding: @comments-tooltip-padding;
 
         &.draft {
-          background-color: #aceb6f;
+          background-color: @comments-tooltip-draft-background;
           border-bottom: 1px black solid;
         }
 
         div {
           &.reviewer {
             font-weight: bold;
+            margin-bottom: 1em;
           }
         }
 
         pre {
-          .pre-wrap;
           font-size: 8pt;
           margin: 0;
           padding: 0;
+          white-space: pre-wrap;
+        }
+
+        .rich-text {
+          code {
+            border-color: @comments-tooltip-border-color;
+          }
+
+          .codehilite {
+            .flush-codehilite();
+            border-color: @comments-tooltip-border-color;
+            margin-left: -@comments-tooltip-padding;
+            margin-right: -@comments-tooltip-padding;
+          }
         }
       }
     }
@@ -2494,13 +2296,13 @@
 .bubble {
   background-color: white;
   border: 1px black solid;
+  border-radius: 8px;
   font-size: 10pt;
   font-weight: bold;
   padding: 6px;
   position: absolute;
   white-space: nowrap;
   z-index: @z-index-dialog;
-  .border-radius(8px);
 }
 
 
@@ -2513,12 +2315,12 @@
 }
 
 #issue-summary-table {
-  @issue-status-gravatar-width: 24px;
+  @issue-status-avatar-width: 24px;
   @issue-status-icon-width: 16px;
   @issue-status-icon-right-margin: 2px;
 
   border: 1px @issue-table-border-color solid;
-  .border-radius(@box-border-radius);
+  border-radius: @box-border-radius;
   border-spacing: 0;
   overflow: hidden;
   width: 100%;
@@ -2625,6 +2427,11 @@
       .issue-row-colors(@issue-resolved-bg, @issue-resolved-hover-bg);
     }
 
+    &.verifying-dropped,
+    &.verifying-resolved {
+      .issue-row-colors(@issue-verifying-bg, @issue-verifying-hover-bg);
+    }
+
     .reviewer {
       padding: 0 @issue-table-cell-padding;
 
@@ -2638,7 +2445,7 @@
     }
 
     .on-mobile-medium-screen-720({
-      @issue-status-icon-mobile-margin-horiz: (@issue-status-gravatar-width -
+      @issue-status-icon-mobile-margin-horiz: (@issue-status-avatar-width -
                                                @issue-status-icon-width) / 2;
 
       /*
@@ -2675,7 +2482,7 @@
 
       .last-updated time {
         /* Align the text. */
-        margin-left: (@issue-status-gravatar-width +
+        margin-left: (@issue-status-avatar-width +
                       @issue-status-icon-mobile-margin-horiz);
       }
 
@@ -2721,7 +2528,7 @@
       .issue-summary-tab {
         border: 1px transparent solid;
         border-bottom: 0;
-        .border-radius(@box-border-radius @box-border-radius 0 0);
+        border-radius: @box-border-radius @box-border-radius 0 0;
         cursor: pointer;
         display: inline-block;
         margin: 0 0.5em 1px 0;
@@ -2810,15 +2617,6 @@
 
 
 /****************************************************************************
- * Rich text
- ****************************************************************************/
-
-.rich-text {
-  .markdown-wysiwyg();
-}
-
-
-/****************************************************************************
  * "Update Diff" dialog
  ****************************************************************************/
 
@@ -2842,4 +2640,141 @@
 }
 
 
-// vim: set et ts=2 sw=2:
+/****************************************************************************
+ * Status Updates
+ ****************************************************************************/
+
+.status-update-header(@color, @border-color) {
+  background-color: @color;
+  border-color: @border-color;
+  border-style: solid;
+}
+
+#initial-status-updates {
+  .header {
+    border-width: 0 0 1px 0;
+
+    &.status-update-state-failure {
+      .status-update-header(@diff-delete-color, @diff-delete-border-color);
+    }
+
+    &.status-update-state-pending,
+    &.status-update-state-not-yet-run {
+      .status-update-header(@diff-replace-color, @diff-replace-border-color);
+    }
+
+    &.status-update-state-success {
+      .status-update-header(@diff-insert-color, @diff-insert-border-color);
+    }
+  }
+
+  .review-request-page-entry-contents {
+    overflow: hidden;
+
+    &.collapsed .header {
+      background-color: @review-request-entry-collapsed-bg;
+      border-width: 0;
+    }
+  }
+}
+
+.status-update-review-header {
+  border-width: 1px 0;
+  margin: 0.75rem 0 -1px;
+  padding: (@review-request-entry-padding / 2) @review-request-entry-padding;
+
+  &.status-update-state-failure {
+    .status-update-header(@diff-delete-color, @diff-delete-border-color);
+  }
+
+  &.status-update-state-pending,
+  &.status-update-state-not-yet-run {
+    .status-update-header(@diff-replace-color, @diff-replace-border-color);
+  }
+
+  &.status-update-state-success {
+    .status-update-header(@diff-insert-color, @diff-insert-border-color);
+  }
+}
+
+.status-update-review .banner {
+  border-bottom-width: 0;
+  margin-top: 1px;
+
+  &.floating {
+    border-bottom-width: 1px;
+  }
+}
+
+.status-update-summary-entry {
+  line-height: 14px;
+  vertical-align: middle;
+
+  &::before {
+    font-size: 14px/1;
+    font-family: FontAwesome;
+
+    /* Set this up to allow for animations. We need position: absolute. */
+    position: absolute;
+  }
+
+  .status-update-state(@color) {
+    color: @color;
+    padding: @review-request-entry-padding;
+
+    .fa {
+      margin-right: 0.5em;
+    }
+  }
+
+  &.status-update-state-failure {
+    .status-update-state(darkred);
+
+    &::before {
+      content: '\f00d';
+    }
+  }
+
+  &.status-update-state-pending {
+    .status-update-state(goldenrod);
+
+    &::before {
+      animation: fa-spin 2s infinite linear;
+      content: '\f021';
+      width: 11px;
+      height: 14px;
+    }
+  }
+
+  &.status-update-state-not-yet-run {
+    .status-update-state(darkcyan);
+
+    &::before {
+      content: '\f04c';
+    }
+  }
+
+  &.status-update-state-success {
+    .status-update-state(darkgreen);
+
+    &::before {
+      content: '\f00c';
+    }
+  }
+
+  .status-update-request-run {
+    margin-left: 1em;
+    margin-top: -5px;
+  }
+
+  .summary {
+    font-weight: bold;
+
+    /* This will cover the icon with spacing after. */
+    margin-left: 2em;
+  }
+
+  a {
+    float: right;
+  }
+}

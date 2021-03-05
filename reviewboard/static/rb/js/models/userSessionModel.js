@@ -9,12 +9,14 @@ var Item,
  * the proper data and then immediately saved or deleted.
  */
 Item = RB.BaseResource.extend({
-    defaults: _.defaults({
-        objectID: null,
-        baseURL: null,
-        stored: false,
-        loaded: true
-    }, RB.BaseResource.prototype.defaults),
+    defaults: function() {
+        return _.defaults({
+            objectID: null,
+            baseURL: null,
+            stored: false,
+            loaded: true
+        }, RB.BaseResource.prototype.defaults());
+    },
 
     url: function() {
         var url = this.get('baseURL');
@@ -49,11 +51,13 @@ Item = RB.BaseResource.extend({
  * of objects.
  */
 StoredItems = RB.BaseResource.extend({
-    defaults: _.defaults({
-        visibility: false,
-        addError: '',
-        removeError: ''
-    }, RB.BaseResource.prototype.defaults),
+    defaults: function() {
+        return _.defaults({
+            visibility: false,
+            addError: '',
+            removeError: ''
+        }, RB.BaseResource.prototype.defaults());
+    },
 
     url: function() {
         return this.get('url');
@@ -128,7 +132,8 @@ RB.UserSession = Backbone.Model.extend({
         watchedReviewGroupsURL: null,
         watchedReviewRequestsURL: null,
         archivedReviewRequestsURL: null,
-        mutedReviewRequestsURL: null
+        mutedReviewRequestsURL: null,
+        userFileAttachmentsURL: null
     },
 
     initialize: function() {
@@ -175,10 +180,51 @@ RB.UserSession = Backbone.Model.extend({
     },
 
     /*
-     * Return a gravatar for the user with the given size.
+     * Return avatar HTML for the user with the given size.
+     *
+     * Version Added:
+     *     3.0.19
+     *
+     * Args:
+     *     size (Number):
+     *         The size of the avatar, in pixels. This is both the width and
+     *         height.
+     *
+     * Return:
+     *     string:
+     *     The HTML for the avatar.
      */
-    getGravatarURL: function(size) {
-        return this.get('gravatarURL') + '&s=' + size;
+    getAvatarHTML: function(size) {
+        var urls = this.get('avatarHTML') || {};
+        return urls[size] || '';
+    },
+
+    /*
+     * Return avatar URLs for the user with the given size.
+     *
+     * Deprecated:
+     *     3.0.19:
+     *     :js:meth:`getAvatarHTML` should be used instead.
+     *
+     * Args:
+     *     size (Number):
+     *         The size of the avatar, in pixels. This is both the width and
+     *         height.
+     *
+     * Return:
+     *     Object:
+     *     An object containing avatar URLs, if the requested avatar size is
+     *     available. This object will contain the following keys:
+     *
+     *     * ``1x``: The url for the avatar.
+     *     * ``2x``: The high-DPI URL for the avatar.
+     *
+     *     If the requested avatar size is unavailable, this function returns
+     *     an empty object.
+     */
+    getAvatarURLs: function(size) {
+        var urls = this.get('avatarURLs') || {};
+        return urls[size] || {};
     },
 
     /*

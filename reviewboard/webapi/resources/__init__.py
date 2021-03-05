@@ -2,21 +2,27 @@ from __future__ import unicode_literals
 
 from django.contrib.auth.models import User
 from djblets.extensions.models import RegisteredExtension
-from djblets.extensions.resources import ExtensionResource
 from djblets.webapi.resources.registry import (ResourcesRegistry,
                                                register_resource_for_model)
+from oauth2_provider.models import AccessToken
 
 from reviewboard.attachments.models import FileAttachment
 from reviewboard.diffviewer.models import DiffSet, FileDiff
 from reviewboard.changedescs.models import ChangeDescription
-from reviewboard.extensions.base import get_extension_manager
 from reviewboard.hostingsvcs.models import HostingServiceAccount
 from reviewboard.notifications.models import WebHookTarget
-from reviewboard.reviews.models import (Comment, DefaultReviewer,
-                                        Group, ReviewRequest,
-                                        ReviewRequestDraft, Review,
-                                        ScreenshotComment, Screenshot,
-                                        FileAttachmentComment)
+from reviewboard.oauth.models import Application
+from reviewboard.reviews.models import (Comment,
+                                        DefaultReviewer,
+                                        FileAttachmentComment,
+                                        GeneralComment,
+                                        Group,
+                                        Review,
+                                        ReviewRequest,
+                                        ReviewRequestDraft,
+                                        Screenshot,
+                                        ScreenshotComment,
+                                        StatusUpdate)
 from reviewboard.scmtools.models import Repository
 from reviewboard.webapi.base import WebAPIResource
 from reviewboard.webapi.models import WebAPIToken
@@ -37,13 +43,10 @@ class Resources(ResourcesRegistry):
         'reviewboard.webapi.resources',
     ]
 
-    def __init__(self):
-        super(Resources, self).__init__()
-
-        self.extension = ExtensionResource(get_extension_manager())
-
     def register_resources(self):
         """Register all the resource model associations."""
+        register_resource_for_model(AccessToken, self.oauth_token)
+        register_resource_for_model(Application, self.oauth_app)
         register_resource_for_model(ChangeDescription, self.change)
         register_resource_for_model(
             Comment,
@@ -87,6 +90,12 @@ class Resources(ResourcesRegistry):
             lambda obj: (obj.review.get().is_reply() and
                          self.review_reply_file_attachment_comment or
                          self.review_file_attachment_comment))
+        register_resource_for_model(
+            GeneralComment,
+            lambda obj: (obj.review.get().is_reply() and
+                         self.review_reply_general_comment or
+                         self.review_general_comment))
+        register_resource_for_model(StatusUpdate, self.status_update)
         register_resource_for_model(User, self.user)
         register_resource_for_model(WebAPIToken, self.api_token)
         register_resource_for_model(WebHookTarget, self.webhook)

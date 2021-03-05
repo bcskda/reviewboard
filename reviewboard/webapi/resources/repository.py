@@ -1,7 +1,5 @@
 from __future__ import unicode_literals
 
-import logging
-
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db.models import Q
 from django.utils import six
@@ -14,16 +12,10 @@ from djblets.webapi.errors import (DOES_NOT_EXIST, INVALID_FORM_DATA,
                                    NOT_LOGGED_IN, PERMISSION_DENIED)
 
 from reviewboard.reviews.models import Group
-from reviewboard.scmtools.errors import (AuthenticationError,
-                                         SCMError,
-                                         RepositoryNotFoundError,
-                                         UnverifiedCertificateError)
+from reviewboard.hostingsvcs.models import HostingServiceAccount
+from reviewboard.scmtools.forms import RepositoryForm
 from reviewboard.scmtools.models import Repository, Tool
-from reviewboard.ssh.client import SSHClient
-from reviewboard.ssh.errors import (SSHError,
-                                    BadHostKeyError,
-                                    UnknownHostKeyError)
-from reviewboard.webapi.base import WebAPIResource
+from reviewboard.webapi.base import ImportExtraDataError, WebAPIResource
 from reviewboard.webapi.decorators import (webapi_check_login_required,
                                            webapi_check_local_site)
 from reviewboard.webapi.errors import (BAD_HOST_KEY,
@@ -35,10 +27,11 @@ from reviewboard.webapi.errors import (BAD_HOST_KEY,
                                        SERVER_CONFIG_ERROR,
                                        UNVERIFIED_HOST_CERT,
                                        UNVERIFIED_HOST_KEY)
+from reviewboard.webapi.mixins import UpdateFormMixin
 from reviewboard.webapi.resources import resources
 
 
-class RepositoryResource(WebAPIResource):
+class RepositoryResource(UpdateFormMixin, WebAPIResource):
     """Provides information on a registered repository.
 
     Review Board has a list of known repositories, which can be modified
@@ -46,12 +39,24 @@ class RepositoryResource(WebAPIResource):
     the information needed for Review Board to access the files referenced
     in diffs.
     """
+
     model = Repository
+    form_class = RepositoryForm
+
     name_plural = 'repositories'
     fields = {
         'id': {
             'type': int,
             'description': 'The numeric ID of the repository.',
+        },
+        'extra_data': {
+            'type': dict,
+            'description': 'Extra data as part of the repository. Some of '
+                           'this will be dependent on the type of repository '
+                           'or hosting service being used, and those should '
+                           'not be modified. Custom fields can be set by the '
+                           'API or extensions.',
+            'added_in': '3.0.18',
         },
         'name': {
             'type': six.text_type,
@@ -100,25 +105,25 @@ class RepositoryResource(WebAPIResource):
 
     allowed_methods = ('GET', 'POST', 'PUT', 'DELETE')
 
-    def grant_priveleges(self, repository, gtype, entity, name):
-        if entity == 'user':
+    def grant_priveleges(self, repository, grant_type, grant_entity, grant_name):
+        if grant_entity == 'user':
             try:
-                user = User.objects.get(username=name)
+                user = User.objects.get(username=grant_name)
             except User.DoesNotExist:
                 raise
-            if gtype == 'add':
+            if grant_type == 'add':
                 repository.users.add(user)
-            elif gtype == 'remove':
+            elif grant_type == 'remove':
                 repository.users.remove(user)
-        elif entity == 'group':
+        elif grant_entity == 'group':
             try:
-                group = Group.objects.get(name=name)
+                group = Group.objects.get(name=grant_name)
             except Group.DoesNotExist:
                 raise
-            if gtype == 'add':
+            if grant_type == 'add':
                 repository.review_groups.add(group)
-            elif gtype == 'remove':
-                repository.review_groups.r
+            elif grant_type == 'remove':
+                repository.review_groups.remove(group)
 
     @webapi_check_login_required
     def get_queryset(self, request, is_list=False, local_site_name=None,
@@ -163,6 +168,29 @@ class RepositoryResource(WebAPIResource):
             return queryset.filter(q).distinct()
         else:
             return self.model.objects.filter(local_site=local_site)
+
+    def parse_tool_field(self, value, **kwargs):
+        """Parse the tool field in a request.
+
+        Args:
+            value (unicode):
+                The name of the tool, as provided in the request.
+
+            **kwargs (dict):
+                Additional keyword arguments passed to the method.
+
+        Returns:
+            unicode:
+            The resulting SCMTool ID to use for the form.
+
+        Raises:
+            django.core.exceptions.ValidationError:
+                The tool could not be found.
+        """
+        try:
+            return Tool.objects.filter(name=value)[0].scmtool_id
+        except IndexError:
+            raise ValidationError('This is not a valid SCMTool')
 
     def serialize_tool_field(self, obj, **kwargs):
         return obj.tool.name
@@ -262,14 +290,10 @@ class RepositoryResource(WebAPIResource):
                 'description': 'The human-readable name of the repository.',
                 'added_in': '1.6',
             },
-            'path': {
-                'type': six.text_type,
-                'description': 'The path to the repository.',
-                'added_in': '1.6',
-            },
             'tool': {
                 'type': six.text_type,
-                'description': 'The ID of the SCMTool to use.',
+                'description': 'The name of the SCMTool to use. Valid '
+                               'names can be found in the Administration UI.',
                 'added_in': '1.6',
             },
         },
@@ -281,6 +305,47 @@ class RepositoryResource(WebAPIResource):
                                'bug ID.',
                 'added_in': '1.6',
             },
+            'bug_tracker_hosting_url': {
+                'type': six.text_type,
+                'description': (
+                    'The URL to the base of your bug tracker hosting service, '
+                    'for services that support this option and when using '
+                    '``bug_tracker_type``.'
+                ),
+                'added_in': '3.0.19',
+            },
+            'bug_tracker_plan': {
+                'type': six.text_type,
+                'description': (
+                    'The bug tracker service plan, if specifying '
+                    '``bug_tracker_type``. The value is specific to the '
+                    'type of bug tracker hosting service.'
+                ),
+                'added_in': '3.0.19',
+            },
+            'bug_tracker_type': {
+                'type': six.text_type,
+                'description': (
+                    'The type of hosting service backing the bug tracker to '
+                    'use for this repository, if not specifying '
+                    '``bug_tracker``. This may require '
+                    '``bug_tracker_hosting_account_username`` and some '
+                    'service-specific fields (``bug_tracker_hosting_url``, '
+                    '``bug_tracker_plan``, and fields containing the '
+                    'service ID).'
+                ),
+                'added_in': '3.0.19',
+            },
+            'bug_tracker_use_hosting': {
+                'type': bool,
+                'description': (
+                    "Whether to use the hosting service's own "
+                    "bug tracker support for this repository. "
+                    "This is dependent on the bug tracker, and "
+                    "required ``hosting_type``."
+                ),
+                'added_in': '3.0.19',
+            },
             'encoding': {
                 'type': six.text_type,
                 'description': 'The encoding used for files in the '
@@ -288,6 +353,35 @@ class RepositoryResource(WebAPIResource):
                                'and should only be used if you absolutely '
                                'need it.',
                 'added_in': '1.6',
+            },
+            'hosting_account_username': {
+                'type': six.text_type,
+                'description': (
+                    'The pre-configured username for a hosting service '
+                    'account used to connect to this repository. This is '
+                    'only used if ``hosting_type`` is set.'
+                ),
+                'added_in': '3.0.19',
+            },
+            'hosting_type': {
+                'type': six.text_type,
+                'description': (
+                    'The type of hosting service backing this repository, if '
+                    'not configuring a plain repository. This will require '
+                    '``hosting_account_username`` and some service-specific '
+                    'fields (``hosting_url``, ``repository_plan``, and '
+                    'fields prefixed with the hosting type ID).'
+                ),
+                'added_in': '3.0.19',
+            },
+            'hosting_url': {
+                'type': six.text_type,
+                'description': (
+                    'The URL to the base of your repository hosting service, '
+                    'for services that support this option and when using '
+                    '``hosting_type``.'
+                ),
+                'added_in': '3.0.19',
             },
             'mirror_path': {
                 'type': six.text_type,
@@ -297,6 +391,11 @@ class RepositoryResource(WebAPIResource):
             'password': {
                 'type': six.text_type,
                 'description': 'The password used to access the repository.',
+                'added_in': '1.6',
+            },
+            'path': {
+                'type': six.text_type,
+                'description': 'The path to the repository.',
                 'added_in': '1.6',
             },
             'public': {
@@ -315,6 +414,15 @@ class RepositoryResource(WebAPIResource):
                                "``<filename>`` in the URL in place of the "
                                "revision and filename parts of the path.",
                 'added_in': '1.6',
+            },
+            'repository_plan': {
+                'type': six.text_type,
+                'description': (
+                    'The hosting service repository plan, if specifying '
+                    '``hosting_type``. The value is specific to the type of '
+                    'hosting service.'
+                ),
+                'added_in': '3.0.19',
             },
             'trust_host': {
                 'type': bool,
@@ -336,18 +444,17 @@ class RepositoryResource(WebAPIResource):
                 'added_in': '2.0',
             },
         },
+        allow_unknown=True
     )
-    def create(self, request, name, path, tool, trust_host=False,
-               bug_tracker=None, encoding=None, mirror_path=None,
-               password=None, public=None, raw_file_url=None, username=None,
-               visible=True, local_site_name=None, *args, **kwargs):
+    def create(self, request, local_site, parsed_request_fields, *args,
+               **kwargs):
         """Creates a repository.
 
         This will create a new repository that can immediately be used for
         review requests.
 
-        The ``tool`` is a registered SCMTool ID. This must be known beforehand,
-        and can be looked up in the Review Board administration UI.
+        The ``tool`` is a registered SCMTool name. This must be known
+        beforehand, and can be looked up in the Review Board administration UI.
 
         Before saving the new repository, the repository will be checked for
         access. On success, the repository will be created and this will
@@ -358,66 +465,13 @@ class RepositoryResource(WebAPIResource):
         returned and the repository information won't be updated. Pass
         ``trust_host=1`` to approve bad/unknown SSH keys or certificates.
         """
-        local_site = self._get_local_site(local_site_name)
-
         if not Repository.objects.can_create(request.user, local_site):
             return self.get_no_access_error(request)
 
-        try:
-            scmtool = Tool.objects.get(name=tool)
-        except Tool.DoesNotExist:
-            return INVALID_FORM_DATA, {
-                'fields': {
-                    'tool': ['This is not a valid SCMTool'],
-                }
-            }
-
-        cert = {}
-        error_result = self._check_repository(scmtool.get_scmtool_class(),
-                                              path, username, password,
-                                              local_site, trust_host, cert,
-                                              request)
-
-        if error_result is not None:
-            return error_result
-
-        if public is None:
-            public = True
-
-        repository = Repository(
-            name=name,
-            path=path,
-            mirror_path=mirror_path or '',
-            raw_file_url=raw_file_url or '',
-            username=username or '',
-            password=password or '',
-            tool=scmtool,
-            bug_tracker=bug_tracker or '',
-            encoding=encoding or '',
-            public=public,
-            visible=visible,
-            local_site=local_site)
-
-        if cert:
-            repository.extra_data['cert'] = cert
-
-        try:
-            repository.full_clean()
-        except ValidationError as e:
-            if hasattr(e, 'params') and 'field' in e.params:
-                return INVALID_FORM_DATA, {
-                    'fields': {
-                        e.params['field']: e.message,
-                    },
-                }
-            else:
-                return REPOSITORY_ALREADY_EXISTS
-
-        repository.save()
-
-        return 201, {
-            self.item_result_key: repository,
-        }
+        return self._create_or_update(form_data=parsed_request_fields,
+                                      request=request,
+                                      local_site=local_site,
+                                      **kwargs)
 
     @webapi_check_local_site
     @webapi_login_required
@@ -428,12 +482,64 @@ class RepositoryResource(WebAPIResource):
                             REPO_INFO_ERROR)
     @webapi_request_fields(
         optional={
+            'archive_name': {
+                'type': bool,
+                'description': "Whether or not the (non-user-visible) name of "
+                               "the repository should be changed so that it "
+                               "(probably) won't conflict with any future "
+                               "repository names. Starting in 3.0.12, "
+                               "performing a DELETE will archive the "
+                               "repository, and is the preferred method.",
+                'added_in': '1.6.2',
+                'deprecated_in': '3.0.12',
+            },
             'bug_tracker': {
                 'type': six.text_type,
                 'description': 'The URL to a bug in the bug tracker for '
                                'this repository, with ``%s`` in place of the '
                                'bug ID.',
                 'added_in': '1.6',
+            },
+            'bug_tracker_hosting_url': {
+                'type': six.text_type,
+                'description': (
+                    'The URL to the base of your bug tracker hosting service, '
+                    'for services that support this option and when using '
+                    '``bug_tracker_type``.'
+                ),
+                'added_in': '3.0.19',
+            },
+            'bug_tracker_plan': {
+                'type': six.text_type,
+                'description': (
+                    'The bug tracker service plan, if specifying '
+                    '``bug_tracker_type``. The value is specific to the '
+                    'type of bug tracker hosting service.'
+                ),
+                'added_in': '3.0.19',
+            },
+            'bug_tracker_type': {
+                'type': six.text_type,
+                'description': (
+                    'The type of hosting service backing the bug tracker to '
+                    'use for this repository, if not specifying '
+                    '``bug_tracker``. This may require '
+                    '``bug_tracker_hosting_account_username`` and some '
+                    'service-specific fields (``bug_tracker_hosting_url``, '
+                    '``bug_tracker_plan``, and fields containing the '
+                    'service ID).'
+                ),
+                'added_in': '3.0.19',
+            },
+            'bug_tracker_use_hosting': {
+                'type': bool,
+                'description': (
+                    "Whether to use the hosting service's own "
+                    "bug tracker support for this repository. "
+                    "This is dependent on the bug tracker, and "
+                    "required ``hosting_type``."
+                ),
+                'added_in': '3.0.19',
             },
             'encoding': {
                 'type': six.text_type,
@@ -442,6 +548,35 @@ class RepositoryResource(WebAPIResource):
                                'and should only be used if you absolutely '
                                'need it.',
                 'added_in': '1.6',
+            },
+            'hosting_account_username': {
+                'type': six.text_type,
+                'description': (
+                    'The pre-configured username for a hosting service '
+                    'account used to connect to this repository. This is '
+                    'only used if ``hosting_type`` is set.'
+                ),
+                'added_in': '3.0.19',
+            },
+            'hosting_type': {
+                'type': six.text_type,
+                'description': (
+                    'The type of hosting service backing this repository, if '
+                    'not configuring a plain repository. This will require '
+                    '``hosting_account_username`` and some service-specific '
+                    'fields (``hosting_url``, ``repository_plan``, and '
+                    'fields prefixed with the hosting type ID).'
+                ),
+                'added_in': '3.0.19',
+            },
+            'hosting_url': {
+                'type': six.text_type,
+                'description': (
+                    'The URL to the base of your repository hosting service, '
+                    'for services that support this option and when using '
+                    '``hosting_type``.'
+                ),
+                'added_in': '3.0.19',
             },
             'mirror_path': {
                 'type': six.text_type,
@@ -480,6 +615,15 @@ class RepositoryResource(WebAPIResource):
                                "revision and filename parts of the path.",
                 'added_in': '1.6',
             },
+            'repository_plan': {
+                'type': six.text_type,
+                'description': (
+                    'The hosting service repository plan, if specifying '
+                    '``hosting_type``. The value is specific to the type of '
+                    'hosting service.'
+                ),
+                'added_in': '3.0.19',
+            },
             'trust_host': {
                 'type': bool,
                 'description': 'Whether or not any unknown host key or '
@@ -493,14 +637,6 @@ class RepositoryResource(WebAPIResource):
                 'type': six.text_type,
                 'description': 'The username used to access the repository.',
                 'added_in': '1.6',
-            },
-            'archive_name': {
-                'type': bool,
-                'description': "Whether or not the (non-user-visible) name of "
-                               "the repository should be changed so that it "
-                               "(probably) won't conflict with any future "
-                               "repository names.",
-                'added_in': '1.6.2',
             },
             'visible': {
                 'type': bool,
@@ -521,8 +657,10 @@ class RepositoryResource(WebAPIResource):
             },
 
         },
+        allow_unknown=True
     )
-    def update(self, request, trust_host=False, *args, **kwargs):
+    def update(self, request, local_site, parsed_request_fields,
+               archive_name=None, *args, **kwargs):
         """Updates a repository.
 
         This will update the information on a repository. If the path,
@@ -542,61 +680,15 @@ class RepositoryResource(WebAPIResource):
         if not self.has_modify_permissions(request, repository):
             return self.get_no_access_error(request)
 
-        for field in ('bug_tracker', 'encoding', 'mirror_path', 'name',
-                      'password', 'path', 'public', 'raw_file_url',
-                      'username', 'visible'):
-            value = kwargs.get(field, None)
+        form_data = parsed_request_fields.copy()
+        form_data['tool'] = repository.tool.name
 
-            if value is not None:
-                setattr(repository, field, value)
-
-        if 'grant_type' in kwargs and 'grant_entity' in kwargs and 'grant_name' in kwargs:
-            self.grant_priveleges(repository,
-                             kwargs['grant_type'], 
-                             kwargs['grant_entity'],
-                             kwargs['grant_name'])
-
-        # Only check the repository if the access information has changed.
-        if 'path' in kwargs or 'username' in kwargs or 'password' in kwargs:
-            cert = {}
-
-            error_result = self._check_repository(
-                repository.tool.get_scmtool_class(),
-                repository.path,
-                repository.username,
-                repository.password,
-                repository.local_site,
-                trust_host,
-                cert,
-                request)
-
-            if error_result is not None:
-                return error_result
-
-            if cert:
-                repository.extra_data['cert'] = cert
-
-        # If the API call is requesting that we archive the name, we'll give it
-        # a name which won't overlap with future user-named repositories. This
-        # should usually be used just before issuing a DELETE call, which will
-        # set the visibility flag to False
-        if kwargs.get('archive_name', False):
-            repository.archive(save=False)
-
-        try:
-            repository.full_clean()
-        except ValidationError as e:
-            return INVALID_FORM_DATA, {
-                'fields': {
-                    e.params['field']: e.message,
-                },
-            }
-
-        repository.save()
-
-        return 200, {
-            self.item_result_key: repository,
-        }
+        return self._create_or_update(repository=repository,
+                                      form_data=form_data,
+                                      request=request,
+                                      local_site=local_site,
+                                      archive=archive_name,
+                                      **kwargs)
 
     @webapi_check_local_site
     @webapi_login_required
@@ -604,10 +696,15 @@ class RepositoryResource(WebAPIResource):
     def delete(self, request, *args, **kwargs):
         """Deletes a repository.
 
-        The repository will not actually be deleted from the database, as
-        that would also trigger a deletion of all review requests. Instead,
-        it makes a repository as no longer being visible, which will hide it
-        in the UIs and in the API.
+        Repositories associated with review requests won't be fully deleted
+        from the database. Instead, they'll be archived, removing them from
+        any lists of repositories but freeing up their name for use in a
+        future repository.
+
+        .. versionchanged::
+            3.0.12
+            Previous releases simply marked a repository as invisible when
+            deleting. Starting in 3.0.12, the repository is archived instead.
         """
         try:
             repository = self.get_object(request, *args, **kwargs)
@@ -617,118 +714,243 @@ class RepositoryResource(WebAPIResource):
         if not self.has_delete_permissions(request, repository):
             return self.get_no_access_error(request)
 
-        if not repository.review_requests.exists():
-            repository.delete()
+        if repository.review_requests.exists():
+            # We don't actually delete the repository. We instead archive it.
+            # Otherwise, all the review requests are lost. By archiving it,
+            # it'll be removed from the UI and from the list in the API.
+            repository.archive()
         else:
-            # We don't actually delete the repository. We instead just hide it.
-            # Otherwise, all the review requests are lost. By marking it as not
-            # visible, it'll be removed from the UI and from the list in the
-            # API.
-            repository.visible = False
-            repository.save()
+            repository.delete()
 
         return 204, {}
 
-    def _check_repository(self, scmtool_class, path, username, password,
-                          local_site, trust_host, ret_cert, request):
-        if local_site:
-            local_site_name = local_site.name
-        else:
-            local_site_name = None
+    def _create_or_update(self, form_data, request, local_site,
+                          repository=None, archive=False, **kwargs):
+        """Create or update a repository.
 
-        while 1:
-            # Keep doing this until we have an error we don't want
-            # to ignore, or it's successful.
+        Args:
+            form_data (dict):
+                The repository data to pass to the form.
+
+            request (django.http.HttpRequest):
+                The HTTP request from the client.
+
+            local_site (reviewboard.site.models.LocalSite):
+                The Local Site being operated on.
+
+            repository (reviewboard.scmtools.models.Repository):
+                An existing repository instance to update, if responding to
+                a HTTP PUT request.
+
+            archive (bool, optional):
+                Whether to archive the repository after updating it.
+
+            **kwargs (dict):
+                Keyword arguments representing additional fields handled by
+                the API resource.
+
+        Returns:
+            tuple or django.http.HttpResponse:
+            The response to send back to the client.
+        """
+        # Try to determine what we need to set bug_tracker_type to, based on
+        # the input and any current settings. We need to do this for two
+        # reasons:
+        #
+        # 1) If the user provides just a `bug_tracker` value, we want to make
+        #    sure that the type is set correctly, without the user having to
+        #    set it (partially for backwards-compatibility, partially because
+        #    it's expected behavior).
+        #
+        # 2) UpdateFormMixin is going to set a default for `bug_tracker_type`
+        #    based on the form field's default value, since it won't find it
+        #    on the model.
+        if (not form_data.get('bug_tracker_type') and
+            (form_data.get('bug_tracker') or
+             (repository is not None and
+              repository.bug_tracker and
+              not repository.extra_data.get('bug_tracker_use_hosting') and
+              not repository.extra_data.get('bug_tracker_type')))):
+            form_data['bug_tracker_type'] = \
+                RepositoryForm.CUSTOM_BUG_TRACKER_ID
+
+        hosting_type = form_data.get('hosting_type')
+        hosting_account_id = None
+
+        if hosting_type and hosting_type != 'custom':
+            hosting_account_username = \
+                form_data.pop('hosting_account_username', None)
+
             try:
-                scmtool_class.check_repository(path, username, password,
-                                               local_site_name)
-                return None
-            except RepositoryNotFoundError:
-                return MISSING_REPOSITORY
-            except BadHostKeyError as e:
-                if trust_host:
-                    try:
-                        client = SSHClient(namespace=local_site_name)
-                        client.replace_host_key(e.hostname,
-                                                e.raw_expected_key,
-                                                e.raw_key)
-                    except IOError as e:
-                        return SERVER_CONFIG_ERROR, {
-                            'reason': six.text_type(e),
-                        }
-                else:
+                hosting_account = HostingServiceAccount.objects.get(
+                    username=hosting_account_username,
+                    hosting_url=form_data.get('hosting_url'),
+                    service_name=hosting_type,
+                    local_site=local_site)
+            except HostingServiceAccount.DoesNotExist:
+                return INVALID_FORM_DATA, {
+                    'fields': {
+                        'hosting_account_username': [
+                            'An existing hosting service account with the '
+                            'username "%s" could not be found for the hosting '
+                            'service "%s".'
+                            % (hosting_account_username, hosting_type),
+                        ],
+                    },
+                }
+
+            hosting_account_id = hosting_account.pk
+
+        # Set additional details for the repository form. We want to force
+        # some state to be set or unset, and add in any extra form-specific
+        # fields.
+        form_data.update(kwargs['extra_fields'])
+        form_data['hosting_account'] = hosting_account_id
+
+        # Pop anytask-specific fields from form_data as they likely arent't
+        # handled by scmtools.RepositoryForm updates.
+        # We will handle specific fields separately after the form update.
+        _ANYTASK_ACL_FIELDS = ['grant_type', 'grant_entity', 'grant_name']
+        grants_update = None
+        if all(map(form_data.__contains__, _ANYTASK_ACL_FIELDS)):
+            grants_update = {k: form_data.pop(k) for k in _ANYTASK_ACL_FIELDS}
+
+        try:
+            handle_form_result = self.handle_form_request(
+                data=form_data,
+                request=request,
+                instance=repository,
+                form_kwargs={
+                    'limit_to_local_site': local_site,
+                    'request': request,
+                },
+                save_kwargs={
+                    'commit': False,
+                },
+                archive=archive,
+                **kwargs)
+        except ImportExtraDataError as e:
+            return e.error_payload
+
+        # Now handle anytask-specific grant updates
+        if grants_update:
+            self.grant_priveleges(repository, **grants_update)
+
+        return handle_form_result
+
+    def save_form(self, form, archive=None, extra_fields=None, **kwargs):
+        """Save the form.
+
+        This will save the repository instance and then optionally archive
+        the repository.
+
+        Args:
+            form (reviewboard.scmtools.forms.RepositoryForm):
+                The form to save.
+
+            archive (bool, optional):
+                Whether to archive the repository.
+
+            extra_fields (dict, optional):
+                Extra fields from the request not otherwise handled by the
+                API resource. Any ``extra_data`` modifications from this will
+                be applied to the repository.
+
+            **kwargs (dict):
+                Additional keyword arguments to pass to the parent method.
+
+        Returns:
+            reviewboard.scmtools.models.Repository:
+            The saved repository.
+        """
+        repository = super(RepositoryResource, self).save_form(form=form,
+                                                               **kwargs)
+
+        # Any errors from this will be caught in _create_or_update.
+        if extra_fields:
+            self.import_extra_data(repository, repository.extra_data,
+                                   extra_fields)
+
+        repository.save()
+        form.save_m2m()
+
+        if archive:
+            repository.archive()
+
+        return repository
+
+    def build_form_error_response(self, form=None, **kwargs):
+        """Build an error response based on the form.
+
+        Args:
+            form (reviewboard.scmtools.forms.RepositoryForm, optional):
+                The repository form.
+
+            **kwargs (dict):
+                Keyword arguments passed to this method.
+
+        Returns:
+            tuple or django.http.HttpResponse:
+            The error response.
+        """
+        if form is not None:
+            if form.get_repository_already_exists():
+                return REPOSITORY_ALREADY_EXISTS
+            elif form.form_validation_error is not None:
+                code = getattr(form.form_validation_error, 'code', None)
+                params = getattr(form.form_validation_error, 'params') or {}
+                e = params.get('exception')
+
+                if code == 'repository_not_found':
+                    return MISSING_REPOSITORY
+                elif code == 'repo_auth_failed':
+                    return REPO_AUTHENTICATION_ERROR, {
+                        'reason': six.text_type(e),
+                    }
+                elif code == 'cert_unverified':
+                    cert = e.certificate
+
+                    return UNVERIFIED_HOST_CERT, {
+                        'certificate': {
+                            'failures': cert.failures,
+                            'fingerprint': cert.fingerprint,
+                            'hostname': cert.hostname,
+                            'issuer': cert.issuer,
+                            'valid': {
+                                'from': cert.valid_from,
+                                'until': cert.valid_until,
+                            },
+                        },
+                    }
+                elif code == 'host_key_invalid':
                     return BAD_HOST_KEY, {
                         'hostname': e.hostname,
                         'expected_key': e.raw_expected_key.get_base64(),
                         'key': e.raw_key.get_base64(),
                     }
-            except UnknownHostKeyError as e:
-                if trust_host:
-                    try:
-                        client = SSHClient(namespace=local_site_name)
-                        client.add_host_key(e.hostname, e.raw_key)
-                    except IOError as e:
-                        return SERVER_CONFIG_ERROR, {
-                            'reason': six.text_type(e),
-                        }
-                else:
+                elif code == 'host_key_unverified':
                     return UNVERIFIED_HOST_KEY, {
                         'hostname': e.hostname,
                         'key': e.raw_key.get_base64(),
                     }
-            except UnverifiedCertificateError as e:
-                if trust_host:
-                    try:
-                        cert = scmtool_class.accept_certificate(
-                            path, local_site_name)
-
-                        if cert:
-                            ret_cert.update(cert)
-                    except IOError as e:
-                        return SERVER_CONFIG_ERROR, {
-                            'reason': six.text_type(e),
-                        }
-                else:
-                    return UNVERIFIED_HOST_CERT, {
-                        'certificate': {
-                            'failures': e.certificate.failures,
-                            'fingerprint': e.certificate.fingerprint,
-                            'hostname': e.certificate.hostname,
-                            'issuer': e.certificate.issuer,
-                            'valid': {
-                                'from': e.certificate.valid_from,
-                                'until': e.certificate.valid_until,
-                            },
-                        },
-                    }
-            except AuthenticationError as e:
-                if 'publickey' in e.allowed_types and e.user_key is None:
-                    return MISSING_USER_KEY
-                else:
-                    return REPO_AUTHENTICATION_ERROR, {
+                elif code in ('accept_cert_failed',
+                              'add_host_key_failed',
+                              'replace_host_key_failed'):
+                    return SERVER_CONFIG_ERROR, {
                         'reason': six.text_type(e),
                     }
-            except SSHError as e:
-                logging.error('Got unexpected SSHError when checking '
-                              'repository: %s'
-                              % e, exc_info=1, request=request)
-                return REPO_INFO_ERROR, {
-                    'error': six.text_type(e),
-                }
-            except SCMError as e:
-                logging.error('Got unexpected SCMError when checking '
-                              'repository: %s'
-                              % e, exc_info=1, request=request)
-                return REPO_INFO_ERROR, {
-                    'error': six.text_type(e),
-                }
-            except Exception as e:
-                logging.error('Unknown error in checking repository %s: %s',
-                              path, e, exc_info=1, request=request)
+                elif code == 'missing_ssh_key':
+                    return MISSING_USER_KEY
+                elif code in ('unexpected_scm_failure',
+                              'unexpected_ssh_failure',
+                              'unexpected_failure'):
+                    return REPO_INFO_ERROR, {
+                        'error': six.text_type(e),
+                    }
 
-                # We should give something better, but I don't have anything.
-                # This will at least give a HTTP 500.
-                raise
+        return super(RepositoryResource, self).build_form_error_response(
+            form=form,
+            **kwargs)
 
 
 repository_resource = RepositoryResource()

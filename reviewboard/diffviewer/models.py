@@ -31,6 +31,8 @@ class LegacyFileDiffData(models.Model):
 
     class Meta:
         db_table = 'diffviewer_filediffdata'
+        verbose_name = _('Legacy File Diff Data')
+        verbose_name_plural = _('Legacy File Diff Data Blobs')
 
 
 class RawFileDiffData(models.Model):
@@ -115,6 +117,11 @@ class RawFileDiffData(models.Model):
             if self.pk:
                 self.save(update_fields=['extra_data'])
 
+    class Meta:
+        db_table = 'diffviewer_rawfilediffdata'
+        verbose_name = _('Raw File Diff Data')
+        verbose_name_plural = _('Raw File Diff Data Blobs')
+
 
 @python_2_unicode_compatible
 class FileDiff(models.Model):
@@ -135,6 +142,8 @@ class FileDiff(models.Model):
         (MODIFIED, _('Modified')),
         (MOVED, _('Moved')),
     )
+
+    _IS_PARENT_EMPTY_KEY = '__parent_diff_empty'
 
     diffset = models.ForeignKey('DiffSet',
                                 related_name='files',
@@ -189,13 +198,35 @@ class FileDiff(models.Model):
 
     @property
     def source_file_display(self):
+        """The displayed filename for the source/original file.
+
+        This may be different than :py:attr:`source_file`, as the associated
+        :py:class:`~reviewboard.scmtools.core.SCMTool` may normalize it for
+        display.
+
+        Type:
+            unicode
+        """
         tool = self.diffset.repository.get_scmtool()
-        return tool.normalize_path_for_display(self.source_file)
+        return tool.normalize_path_for_display(
+            self.source_file,
+            extra_data=self.extra_data)
 
     @property
     def dest_file_display(self):
+        """The displayed filename for the destination/modified file.
+
+        This may be different than :py:attr:`dest_file`, as the associated
+        :py:class:`~reviewboard.scmtools.core.SCMTool` may normalize it for
+        display.
+
+        Type:
+            unicode
+        """
         tool = self.diffset.repository.get_scmtool()
-        return tool.normalize_path_for_display(self.dest_file)
+        return tool.normalize_path_for_display(
+            self.dest_file,
+            extra_data=self.extra_data)
 
     @property
     def deleted(self):
@@ -210,8 +241,29 @@ class FileDiff(models.Model):
         return self.status == self.MOVED
 
     @property
+    def modified(self):
+        """Whether this file is a modification to an existing file."""
+        return self.status == self.MODIFIED
+
+    @property
     def is_new(self):
         return self.source_revision == PRE_CREATION
+
+    @property
+    def status_string(self):
+        """The FileDiff's status as a human-readable string."""
+        if self.status == FileDiff.COPIED:
+            return 'copied'
+        elif self.status == FileDiff.DELETED:
+            return 'deleted'
+        elif self.status == FileDiff.MODIFIED:
+            return 'modified'
+        elif self.status == FileDiff.MOVED:
+            return 'moved'
+        else:
+            logging.error('Unknown FileDiff status %r for FileDiff %s',
+                          self.status, self.pk)
+            return 'unknown'
 
     def _get_diff(self):
         if self._needs_diff_migration():
@@ -250,6 +302,41 @@ class FileDiff(models.Model):
         return is_new
 
     parent_diff = property(_get_parent_diff, _set_parent_diff)
+
+    def is_parent_diff_empty(self, cache_only=False):
+        """Return whether or not the parent diff is empty.
+
+        Args:
+            cache_only (bool, optional):
+                Whether or not to only use cached results.
+
+        Returns:
+            bool:
+            Whether or not the parent diff is empty. This is true if either
+            there is no parent diff or if the parent diff has no insertions and
+            no deletions.
+        """
+        assert self.parent_diff_hash_id is not None, 'No parent diff.'
+
+        if cache_only:
+            return self.extra_data.get(self._IS_PARENT_EMPTY_KEY, False)
+
+        if (not self.extra_data or
+            self._IS_PARENT_EMPTY_KEY not in self.extra_data):
+            parent_diff_hash = self.parent_diff_hash
+
+            if (parent_diff_hash.insert_count is None or
+                parent_diff_hash.delete_count is None):
+                tool = self.diffset.repository.get_scmtool()
+                parent_diff_hash.recalculate_line_counts(tool)
+
+            self.extra_data[self._IS_PARENT_EMPTY_KEY] = (
+                parent_diff_hash.insert_count == 0 and
+                parent_diff_hash.delete_count == 0)
+
+            self.save(update_fields=('extra_data',))
+
+        return self.extra_data[self._IS_PARENT_EMPTY_KEY]
 
     @property
     def orig_sha1(self):
@@ -408,9 +495,13 @@ class FileDiff(models.Model):
         needs_save = False
         diff_hash_is_new = False
         parent_diff_hash_is_new = False
+        fix_refs = False
         legacy_pks = []
+        needs_diff_migration = self._needs_diff_migration()
+        needs_parent_diff_migration = self._needs_parent_diff_migration()
 
-        if self._needs_diff_migration():
+        if needs_diff_migration:
+            recalculate_diff_counts = recalculate_counts
             needs_save = True
 
             if self.legacy_diff_hash_id:
@@ -418,9 +509,17 @@ class FileDiff(models.Model):
                               'RawFileDiffData for diff in FileDiff %s',
                               self.legacy_diff_hash_id, self.pk)
 
-                diff_hash_is_new = self._set_diff(self.legacy_diff_hash.binary)
-                legacy_pks.append(self.legacy_diff_hash_id)
-                self.legacy_diff_hash = None
+                try:
+                    legacy_data = self.legacy_diff_hash.binary
+                except LegacyFileDiffData.DoesNotExist:
+                    # Another process migrated this before we could.
+                    # We'll need to fix the references.
+                    fix_refs = True
+                    recalculate_diff_counts = False
+                else:
+                    diff_hash_is_new = self._set_diff(legacy_data)
+                    legacy_pks.append(self.legacy_diff_hash_id)
+                    self.legacy_diff_hash = None
             else:
                 logging.debug('Migrating FileDiff %s diff data to '
                               'RawFileDiffData',
@@ -428,10 +527,11 @@ class FileDiff(models.Model):
 
                 diff_hash_is_new = self._set_diff(self.diff64)
 
-            if recalculate_counts:
+            if recalculate_diff_counts:
                 self._recalculate_line_counts(self.diff_hash)
 
-        if self._needs_parent_diff_migration():
+        if needs_parent_diff_migration:
+            recalculate_parent_diff_counts = recalculate_counts
             needs_save = True
 
             if self.legacy_parent_diff_hash_id:
@@ -439,10 +539,18 @@ class FileDiff(models.Model):
                               'RawFileDiffData for parent diff in FileDiff %s',
                               self.legacy_parent_diff_hash_id, self.pk)
 
-                parent_diff_hash_is_new = \
-                    self._set_parent_diff(self.legacy_parent_diff_hash.binary)
-                legacy_pks.append(self.legacy_parent_diff_hash_id)
-                self.legacy_parent_diff_hash = None
+                try:
+                    legacy_parent_data = self.legacy_parent_diff_hash.binary
+                except LegacyFileDiffData.DoesNotExist:
+                    # Another process migrated this before we could.
+                    # We'll need to fix the references.
+                    fix_refs = True
+                    recalculate_parent_diff_counts = False
+                else:
+                    parent_diff_hash_is_new = \
+                        self._set_parent_diff(legacy_parent_data)
+                    legacy_pks.append(self.legacy_parent_diff_hash_id)
+                    self.legacy_parent_diff_hash = None
             else:
                 logging.debug('Migrating FileDiff %s parent diff data to '
                               'RawFileDiffData',
@@ -451,11 +559,50 @@ class FileDiff(models.Model):
                 parent_diff_hash_is_new = \
                     self._set_parent_diff(self.parent_diff64)
 
-            if recalculate_counts:
+            if recalculate_parent_diff_counts:
                 self._recalculate_line_counts(self.parent_diff_hash)
 
+        if fix_refs:
+            # Another server/process/thread got to this before we could.
+            # We need to pull the latest refs and make sure they're set here.
+            diff_hash, parent_diff_hash = (
+                FileDiff.objects.filter(pk=self.pk)
+                .values_list('diff_hash_id', 'parent_diff_hash_id')[0]
+            )
+
+            if needs_diff_migration:
+                if diff_hash:
+                    self.diff_hash_id = diff_hash
+                    self.legacy_diff_hash = None
+                    self.diff64 = ''
+                else:
+                    logging.error('Unable to migrate diff for FileDiff %s: '
+                                  'LegacyFileDiffData "%s" is missing, and '
+                                  'database entry does not have a new '
+                                  'diff_hash! Data may be missing.',
+                                  self.pk, self.legacy_diff_hash_id)
+
+            if needs_parent_diff_migration:
+                if parent_diff_hash:
+                    self.parent_diff_hash_id = parent_diff_hash
+                    self.legacy_parent_diff_hash = None
+                    self.parent_diff64 = ''
+                else:
+                    logging.error('Unable to migrate parent diff for '
+                                  'FileDiff %s: LegacyFileDiffData "%s" is '
+                                  'missing, and database entry does not have '
+                                  'a new parent_diff_hash! Data may be '
+                                  'missing.',
+                                  self.pk, self.legacy_parent_diff_hash_id)
+
         if needs_save:
-            self.save()
+            if self.pk:
+                self.save(update_fields=[
+                    'diff64', 'parent_diff64', 'diff_hash', 'parent_diff_hash',
+                    'legacy_diff_hash', 'legacy_parent_diff_hash',
+                ])
+            else:
+                self.save()
 
         if legacy_pks:
             # Delete any LegacyFileDiffData objects no longer associated
@@ -479,6 +626,11 @@ class FileDiff(models.Model):
     def __str__(self):
         return "%s (%s) -> %s (%s)" % (self.source_file, self.source_revision,
                                        self.dest_file, self.dest_detail)
+
+    class Meta:
+        db_table = 'diffviewer_filediff'
+        verbose_name = _('File Diff')
+        verbose_name_plural = _('File Diffs')
 
 
 @python_2_unicode_compatible
@@ -523,33 +675,68 @@ class DiffSet(models.Model):
 
         return counts
 
-    def save(self, **kwargs):
+    def update_revision_from_history(self, diffset_history):
+        """Update the revision of this diffset based on a diffset history.
+
+        This will determine the appropriate revision to use for the diffset,
+        based on how many other diffsets there are in the history. If there
+        aren't any, the revision will be set to 1.
+
+        Args:
+            diffset_history (reviewboard.diffviewer.models.DiffSetHistory):
+                The diffset history used to compute the new revision.
+
+        Raises:
+            ValueError:
+                The revision already has a valid value set, and cannot be
+                updated.
         """
-        Saves this diffset.
+        if self.revision not in (0, None):
+            raise ValueError('The diffset already has a valid revision set.')
+
+        # Default this to revision 1. We'll use this if the DiffSetHistory
+        # isn't saved yet (which may happen when creating a new review request)
+        # or if there aren't yet any diffsets.
+        self.revision = 1
+
+        if diffset_history.pk:
+            try:
+                latest_diffset = \
+                    diffset_history.diffsets.only('revision').latest()
+                self.revision = latest_diffset.revision + 1
+            except DiffSet.DoesNotExist:
+                # Stay at revision 1.
+                pass
+
+    def save(self, **kwargs):
+        """Save this diffset.
 
         This will set an initial revision of 1 if this is the first diffset
         in the history, and will set it to on more than the most recent
         diffset otherwise.
-        """
-        if self.revision == 0 and self.history is not None:
-            if self.history.diffsets.count() == 0:
-                # Start on revision 1. It's more human-grokable.
-                self.revision = 1
-            else:
-                self.revision = self.history.diffsets.latest().revision + 1
 
-        if self.history:
+        Args:
+            **kwargs (dict):
+                Extra arguments for the save call.
+        """
+        if self.history is not None:
+            if self.revision == 0:
+                self.update_revision_from_history(self.history)
+
             self.history.last_diff_updated = self.timestamp
             self.history.save()
 
-        super(DiffSet, self).save()
+        super(DiffSet, self).save(**kwargs)
 
     def __str__(self):
         return "[%s] %s r%s" % (self.id, self.name, self.revision)
 
     class Meta:
+        db_table = 'diffviewer_diffset'
         get_latest_by = 'revision'
         ordering = ['revision', 'timestamp']
+        verbose_name = _('Diff Set')
+        verbose_name_plural = _('Diff Sets')
 
 
 @python_2_unicode_compatible
@@ -574,4 +761,6 @@ class DiffSetHistory(models.Model):
         return 'Diff Set History (%s revisions)' % self.diffsets.count()
 
     class Meta:
-        verbose_name_plural = "Diff set histories"
+        db_table = 'diffviewer_diffsethistory'
+        verbose_name = _('Diff Set History')
+        verbose_name_plural = _('Diff Set Histories')

@@ -1,13 +1,19 @@
 from __future__ import unicode_literals
 
 import logging
+from importlib import import_module
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from django.utils.translation import ugettext as _
+from djblets.siteconfig.models import SiteConfiguration
 from paramiko.hostkeys import HostKeyEntry
 import paramiko
 
 from reviewboard.ssh.errors import UnsupportedSSHKeyError
+
+
+logger = logging.getLogger(__name__)
 
 
 class SSHHostKeys(paramiko.HostKeys):
@@ -28,7 +34,10 @@ class SSHHostKeys(paramiko.HostKeys):
         lines = self.storage.read_host_keys()
 
         for line in lines:
-            entry = HostKeyEntry.from_line(line)
+            try:
+                entry = HostKeyEntry.from_line(line)
+            except paramiko.SSHException:
+                entry = None
 
             if entry is not None:
                 self._entries.append(entry)
@@ -49,52 +58,101 @@ class SSHClient(paramiko.SSHClient):
     Key access goes through an SSHStorage backend. The storage backend knows
     how to look up keys and write them.
 
-    The default backend works with the site directory's data/.ssh directory,
-    and supports namespaced directories for LocalSites.
+    The default backend works with the site directory's :file:`data/.ssh`
+    directory, and supports namespaced directories for LocalSites.
     """
+
     DEFAULT_STORAGE = 'reviewboard.ssh.storage.FileSSHStorage'
     SUPPORTED_KEY_TYPES = (paramiko.RSAKey, paramiko.DSSKey)
 
-    def __init__(self, namespace=None, storage=None):
+    def __init__(self, namespace=None, storage_backend=None):
+        """Initialize the client.
+
+        Version Changed:
+            3.0.18:
+            Renamed the old, unused ``storage`` parameter to a supported
+            ``storage_backend`` parameter.
+
+        Args:
+            namespace (unicode, optional):
+                The namespace to use for any SSH-related data.
+
+            storage_backend (unicode, optional):
+                The class path to a storage backend to use.
+        """
         super(SSHClient, self).__init__()
 
         self.namespace = namespace
-        self._load_storage()
+        self._load_storage(storage_backend)
         self._host_keys = SSHHostKeys(self.storage)
 
         self.load_host_keys('')
 
-    def _load_storage(self):
-        """Loads the storage backend.
+    def _load_storage(self, storage_backend=None):
+        """Load the storage backend.
 
-        This will attempt to load the SSH storage backend. If there is an
-        error in loading the backend, it will be logged, and an
-        ImproperlyConfigured exception will be raised.
+        If an explicit storage backend is provided, it will be used.
+        Otherwise, this will first check the site configuration for a
+        ``rbssh_storage_backend`` key. It will then fall back to
+        ``settings.RBSSH_STORAGE_BACKEND``, for compatibility. If that
+        doesn't work, it will default to the built-in local storage backend.
+
+        Raises:
+            ImproperlyConfigured:
+                The SSH backend could not be loaded.
         """
-        try:
-            path = getattr(settings, 'RBSSH_STORAGE_BACKEND',
-                           self.DEFAULT_STORAGE)
-        except ImportError:
-            # We may not be running in the Django environment.
-            path = self.DEFAULT_STORAGE
+        backend_paths = []
 
-        i = path.rfind('.')
-        module, class_name = path[:i], path[i + 1:]
+        if storage_backend:
+            backend_paths.append(storage_backend)
+        else:
+            try:
+                siteconfig = SiteConfiguration.objects.get_current()
+                backend_paths.append(siteconfig.get('ssh_storage_backend'))
+            except Exception:
+                pass
 
-        try:
-            mod = __import__(module, {}, {}, [class_name])
-        except ImportError as e:
-            msg = 'Error importing SSH storage backend %s: "%s"' % (module, e)
-            logging.critical(msg)
-            raise ImproperlyConfigured(msg)
+            try:
+                backend_paths.append(
+                    getattr(settings, 'RBSSH_STORAGE_BACKEND'))
+            except (AttributeError, ImportError):
+                # We may not be running in the Django environment.
+                pass
 
-        try:
-            self.storage = getattr(mod, class_name)(namespace=self.namespace)
-        except Exception as e:
-            msg = 'Error instantiating SSH storage backend %s: "%s"' % \
-                  (module, e)
-            logging.critical(msg)
-            raise
+            backend_paths.append(self.DEFAULT_STORAGE)
+
+        self.storage = None
+
+        for backend_path in backend_paths:
+            if not backend_path:
+                continue
+
+            i = backend_path.rfind('.')
+            module, class_name = backend_path[:i], backend_path[i + 1:]
+
+            try:
+                mod = import_module(module)
+                storage_cls = getattr(mod, class_name)
+            except (AttributeError, ImportError) as e:
+                logger.exception('Error importing SSH storage backend %s: %s',
+                                 backend_path, e)
+                continue
+
+            try:
+                self.storage = storage_cls(namespace=self.namespace)
+                break
+            except Exception as e:
+                logger.exception('Error instantiating SSH storage backend '
+                                 '%s: %s',
+                                 backend_path, e)
+
+        if self.storage is None:
+            # Since we have a default storage backend, we should never actually
+            # reach this, but it's better to have some sort of error rather
+            # than just failing or asserting.
+            raise ImproperlyConfigured(
+                _('Unable to load a suitable SSH storage backend. See the '
+                  'log for error details.'))
 
     def get_user_key(self):
         """Returns the keypair of the user running Review Board.

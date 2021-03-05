@@ -1,8 +1,9 @@
 .. _email:
+.. _working-with-email:
 
-======
-E-Mail
-======
+===================
+Working with E-Mail
+===================
 
 Sending E-Mail
 ==============
@@ -27,17 +28,21 @@ Sender Headers
 Review Board can send e-mail on behalf of users. This may happen when
 creating a new review request or reviewing some code.
 
-E-mails appear to be sent from the users, rather than from Review Board
-itself. It accomplishes this by putting the user's name and e-mail address
-in the :mailheader:`Sender` field in the e-mail, and the configured
-:ref:`sender e-mail address <sender-email-address>` in the
-:mailheader:`From` field. That address can be customized in the
-:ref:`email-settings`.
+By default, e-mails appear to be sent from the users, rather than from Review
+Board itself. The :mailheader:`From` field will contain the full name and
+e-mail address of the user, helping the thread appear as a standard discussion
+over e-mail.
 
-By using these two fields instead of just faking the :mailheader:`From`
-address, we can avoid e-mails appearing to be spam or otherwise malicious.
-Many modern e-mail clients warn if the :mailheader:`From` address appears to
-be suspicious.
+However, if the e-mail address's domain has a :term:`DMARC` record that
+rejects or quarantines suspicious e-mails, this behavior will be turned off,
+instead using the :ref:`Default From address
+<setting-mail-default-from-address>` configured in :ref:`email-settings`.
+
+All e-mail setups are different, and some are more strict than others. If the
+default behavior is not working out for you, you can change it to always use
+the user's address, regardless of :term:`DMARC` record, or to only ever use
+the default address. This is done through the :ref:`Use user's From address
+<setting-mail-use-users-from-address>` setting.
 
 
 Sender Verification through DKIM
@@ -57,7 +62,7 @@ DNS records.
 
 There are many guides out there for DKIM. See the following:
 
-* `DKIM on Wikipedia <http://en.wikipedia.org/wiki/DomainKeys_Identified_Mail>`_
-* `DKIM DNS wizard <http://www.dnswatch.info/dkim/create-dns-record>`_
+* `DKIM on Wikipedia <https://en.wikipedia.org/wiki/DomainKeys_Identified_Mail>`_
+* `DKIM DNS wizard <https://www.dnswatch.info/dkim/create-dns-record>`_
 * `Postfix DKIM on Ubuntu <https://help.ubuntu.com/community/Postfix/DKIM>`_
-* `Configuring DKIM and Sendmail on Fedora 13 <http://www.rickwargo.com/2010/11/19/configuring-dkim-and-sendmail-on-fedora-13/>`_
+* `Setting up DKIM with Sendmail on Ubuntu 14.04 <https://philio.me/setting-up-dkim-with-sendmail-on-ubuntu-14-04/>`_

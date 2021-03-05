@@ -32,4 +32,9 @@ SEQUENCE = [
     'review_request_summary_index_manual',
     'split_rich_text',
     'is_default_group',
+    'general_comments',
+    'add_owner_to_draft',
+    'status_update_timeout',
+    'comment_issue_verification',
+    'review_request_screenshot_attachment_counters',
 ]

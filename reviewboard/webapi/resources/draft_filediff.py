@@ -10,6 +10,7 @@ from djblets.webapi.errors import (DOES_NOT_EXIST, INVALID_FORM_DATA,
 
 from reviewboard.attachments.forms import UploadFileForm
 from reviewboard.attachments.models import FileAttachment
+from reviewboard.webapi.base import ImportExtraDataError
 from reviewboard.webapi.decorators import webapi_check_local_site
 from reviewboard.webapi.resources import resources
 from reviewboard.webapi.resources.filediff import FileDiffResource
@@ -97,10 +98,8 @@ class DraftFileDiffResource(FileDiffResource):
         If this represents a binary file, then the contents of the binary
         file can be uploaded before the review request is published.
 
-        Extra data can be stored for later lookup by passing
-        ``extra_data.key_name=value``. The ``key_name`` and ``value`` can be
-        any valid strings. Passing a blank ``value`` will remove the key. The
-        ``extra_data.`` prefix is required.
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         try:
             filediff = self.get_object(request, *args, **kwargs)
@@ -151,7 +150,12 @@ class DraftFileDiffResource(FileDiffResource):
             form.create(filediff)
 
         if extra_fields:
-            self.import_extra_data(filediff, filediff.extra_data, extra_fields)
+            try:
+                self.import_extra_data(filediff, filediff.extra_data,
+                                       extra_fields)
+            except ImportExtraDataError as e:
+                return e.error_payload
+
             filediff.save(update_fields=['extra_data'])
 
         return 200, {

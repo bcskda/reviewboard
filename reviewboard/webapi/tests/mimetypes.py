@@ -16,6 +16,9 @@ change_list_mimetype = _build_mimetype('review-request-changes')
 change_item_mimetype = _build_mimetype('review-request-change')
 
 
+diff_context_mimetype = _build_mimetype('diff-context')
+
+
 default_reviewer_list_mimetype = _build_mimetype('default-reviewers')
 default_reviewer_item_mimetype = _build_mimetype('default-reviewer')
 
@@ -53,6 +56,10 @@ filediff_comment_list_mimetype = _build_mimetype('file-diff-comments')
 filediff_comment_item_mimetype = _build_mimetype('file-diff-comment')
 
 
+general_comment_list_mimetype = _build_mimetype('general-comments')
+general_comment_item_mimetype = _build_mimetype('general-comment')
+
+
 hosting_service_list_mimetype = _build_mimetype('hosting-services')
 hosting_service_item_mimetype = _build_mimetype('hosting-service')
 
@@ -61,6 +68,14 @@ hosting_service_account_list_mimetype = \
     _build_mimetype('hosting-service-accounts')
 hosting_service_account_item_mimetype = \
     _build_mimetype('hosting-service-account')
+
+
+oauth_app_list_mimetype = _build_mimetype('oauth-apps')
+oauth_app_item_mimetype = _build_mimetype('oauth-app')
+
+
+oauth_token_list_mimetype = _build_mimetype('oauth-tokens')
+oauth_token_item_mimetype = _build_mimetype('oauth-token')
 
 
 original_file_mimetype = 'text/plain'
@@ -96,8 +111,15 @@ review_group_list_mimetype = _build_mimetype('review-groups')
 review_group_item_mimetype = _build_mimetype('review-group')
 
 
+review_group_user_list_mimetype = _build_mimetype('review-group-users')
+review_group_user_item_mimetype = _build_mimetype('review-group-user')
+
+
 review_reply_list_mimetype = _build_mimetype('review-replies')
 review_reply_item_mimetype = _build_mimetype('review-reply')
+
+
+review_request_last_update_mimetype = _build_mimetype('last-update')
 
 
 review_reply_diff_comment_list_mimetype = \
@@ -110,6 +132,12 @@ review_reply_file_attachment_comment_list_mimetype = \
     _build_mimetype('review-reply-file-attachment-comments')
 review_reply_file_attachment_comment_item_mimetype = \
     _build_mimetype('review-reply-file-attachment-comment')
+
+
+review_reply_general_comment_list_mimetype = \
+    _build_mimetype('review-reply-general-comments')
+review_reply_general_comment_item_mimetype = \
+    _build_mimetype('review-reply-general-comment')
 
 
 review_reply_screenshot_comment_list_mimetype = \
@@ -140,14 +168,25 @@ screenshot_draft_item_mimetype = _build_mimetype('draft-screenshot')
 screenshot_draft_list_mimetype = _build_mimetype('draft-screenshots')
 
 
+search_mimetype = _build_mimetype('search')
+
+
 server_info_mimetype = _build_mimetype('server-info')
 
 
 session_mimetype = _build_mimetype('session')
 
 
+status_update_list_mimetype = _build_mimetype('status-updates')
+status_update_item_mimetype = _build_mimetype('status-update')
+
+
 user_list_mimetype = _build_mimetype('users')
 user_item_mimetype = _build_mimetype('user')
+
+
+user_file_attachment_list_mimetype = _build_mimetype('user-file-attachments')
+user_file_attachment_item_mimetype = _build_mimetype('user-file-attachment')
 
 
 validate_diff_mimetype = _build_mimetype('diff-validation')

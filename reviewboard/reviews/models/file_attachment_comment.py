@@ -95,3 +95,8 @@ class FileAttachmentComment(BaseComment):
                               review_ui, e, exc_info=1)
         else:
             return self.file_attachment.display_name
+
+    class Meta(BaseComment.Meta):
+        db_table = 'reviews_fileattachmentcomment'
+        verbose_name = _('File Attachment Comment')
+        verbose_name_plural = _('File Attachment Comments')

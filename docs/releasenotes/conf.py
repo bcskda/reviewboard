@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(__file__, '..', '..', '..',
 sys.path.insert(0, os.path.dirname(__file__))
 
 import reviewboard
+from reviewboard.dependencies import django_doc_major_version
 
 
 # General configuration
@@ -40,7 +41,15 @@ import reviewboard
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
-extensions = ['sphinx.ext.intersphinx', 'extralinks', 'retina_images']
+extensions = [
+    'sphinx.ext.intersphinx',
+    'beanbag_docutils.sphinx.ext.django_utils',
+    'beanbag_docutils.sphinx.ext.extlinks',
+    'beanbag_docutils.sphinx.ext.http_role',
+    'beanbag_docutils.sphinx.ext.intersphinx_utils',
+    'beanbag_docutils.sphinx.ext.retina_images',
+    'extralinks',
+]
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -103,6 +112,8 @@ add_module_names = True
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'
 
+suppress_warnings = ['ref.option']
+
 
 # Options for HTML output
 # -----------------------
@@ -112,7 +123,7 @@ html_theme = 'classic'
 # The style sheet to use for HTML and HTML Help pages. A file of that name
 # must exist either in Sphinx' static/ path, or in one of the custom paths
 # given in html_static_path.
-html_style = 'default.css'
+html_style = 'classic.css'
 
 # The name for this set of Sphinx documents.  If None, it defaults to
 # "<project> v<release> documentation".
@@ -209,13 +220,36 @@ latex_documents = [
 #latex_use_modindex = True
 
 
-# Example configuration for intersphinx: refer to the Python standard library.
+# Check whether reviewboard.org intersphinx lookups should use the local
+# server.
+if os.getenv('DOCS_USE_LOCAL_RBWEBSITE') == '1':
+    rbwebsite_url = 'http://localhost:8081'
+else:
+    rbwebsite_url = 'https://www.reviewboard.org'
+
+
+# Add references for intersphinx and custom roles.
+django_doc_base_url = ('http://django.readthedocs.io/en/%s.x/'
+                       % django_doc_major_version)
+
 intersphinx_mapping = {
-    'django': ('https://docs.djangoproject.com/en/%s/'
-               % reviewboard.django_major_version,
-               'https://docs.djangoproject.com/en/%s/_objects/'
-               % reviewboard.django_major_version),
+    'django': (django_doc_base_url, None),
+    'djblets0.9': ('%s/docs/djblets/0.9/' % rbwebsite_url, None),
+    'djblets0.10': ('%s/docs/djblets/1.0/' % rbwebsite_url, None),
+    'djblets1.0': ('%s/docs/djblets/1.0/' % rbwebsite_url, None),
     'python': ('https://docs.python.org/2.7', None),
-    'rbtools': ('https://www.reviewboard.org/docs/rbtools/dev/', None),
-    'reviewboard': ('https://www.reviewboard.org/docs/manual/dev/', None),
+    'rbt0.6': ('%s/docs/rbtools/0.6/' % rbwebsite_url, None),
+    'rbt0.7': ('%s/docs/rbtools/0.7/' % rbwebsite_url, None),
+    'rb-latest': ('%s/docs/rbtools/latest/' % rbwebsite_url, None),
+    'rb1.7': ('%s/docs/manual/1.7/' % rbwebsite_url, None),
+    'rb2.0': ('%s/docs/manual/2.0/' % rbwebsite_url, None),
+    'rb2.5': ('%s/docs/manual/2.5/' % rbwebsite_url, None),
+    'rb3.0': ('%s/docs/manual/3.0/' % rbwebsite_url, None),
+}
+
+extlinks = {
+    'djangodoc': ('%s%%s.html' % django_doc_base_url, None),
+    'backbonejs': ('http://backbonejs.org/#%s', 'Backbone.'),
+    'pypi': ('https://pypi.org/project/%s/', ''),
+    'rbintegration': ('https://www.reviewboard.org/integrations/%s', ''),
 }

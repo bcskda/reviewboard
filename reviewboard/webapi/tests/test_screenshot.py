@@ -71,7 +71,7 @@ class ResourceListTests(ReviewRequestChildListMixin, BaseWebAPITestCase):
 
         if post_valid_data:
             post_data = {
-                'path': open(self._getTrophyFilename(), 'r'),
+                'path': open(self.get_sample_image_filename(), 'rb'),
             }
         else:
             post_data = {}
@@ -86,7 +86,9 @@ class ResourceListTests(ReviewRequestChildListMixin, BaseWebAPITestCase):
         self.assertIsNotNone(draft)
 
         self.assertEqual(draft.screenshots.count(), 1)
+        self.assertEqual(draft.screenshots_count, 1)
         self.assertEqual(review_request.screenshots.count(), 0)
+        self.assertEqual(review_request.screenshots_count, 0)
 
     def test_post_with_permission_denied_error(self):
         """Testing the POST review-requests/<id>/screenshots/ API
@@ -95,16 +97,14 @@ class ResourceListTests(ReviewRequestChildListMixin, BaseWebAPITestCase):
         review_request = self.create_review_request()
         self.assertNotEqual(review_request.submitter, self.user)
 
-        f = open(self._getTrophyFilename(), "r")
-        self.assertTrue(f)
-        rsp = self.api_post(
-            get_screenshot_list_url(review_request),
-            {
-                'caption': 'Trophy',
-                'path': f,
-            },
-            expected_status=403)
-        f.close()
+        with open(self.get_sample_image_filename(), 'rb') as f:
+            rsp = self.api_post(
+                get_screenshot_list_url(review_request),
+                {
+                    'caption': 'Trophy',
+                    'path': f,
+                },
+                expected_status=403)
 
         self.assertEqual(rsp['stat'], 'fail')
         self.assertEqual(rsp['err']['code'], PERMISSION_DENIED.code)
@@ -179,9 +179,7 @@ class ResourceItemTests(ReviewRequestChildItemMixin, BaseWebAPITestCase):
 
         return (get_screenshot_item_url(screenshot, local_site_name),
                 screenshot_item_mimetype,
-                {
-                    'caption': 'My new caption',
-                },
+                {'caption': 'My new caption'},
                 screenshot,
                 [review_request])
 

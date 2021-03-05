@@ -38,14 +38,23 @@ import re
 from django.conf import settings, global_settings
 from django.core.exceptions import ImproperlyConfigured
 from django.utils import six
+from django.utils.translation import ugettext as _
 from djblets.log import restart_logging, siteconfig as log_siteconfig
+from djblets.recaptcha import siteconfig as recaptcha_siteconfig
 from djblets.siteconfig.django_settings import (apply_django_settings,
                                                 get_django_defaults,
                                                 get_django_settings_map)
 from djblets.siteconfig.models import SiteConfiguration
+from djblets.webapi.auth.backends import reset_auth_backends
 from haystack import connections
 
-from reviewboard.accounts.backends import get_registered_auth_backend
+from reviewboard.accounts.backends import auth_backends
+from reviewboard.accounts.privacy import recompute_privacy_consents
+from reviewboard.avatars import avatar_services
+from reviewboard.oauth.features import oauth2_service_feature
+from reviewboard.notifications.email.message import EmailMessage
+from reviewboard.search import search_backend_registry
+from reviewboard.search.search_backends.whoosh import WhooshBackend
 from reviewboard.signals import site_settings_loaded
 
 
@@ -60,36 +69,38 @@ storage_backend_map = {
 # A mapping of siteconfig setting names to Django settings.py names.
 # This also contains all the djblets-provided mappings as well.
 settings_map = {
-    'auth_digest_file_location':      'DIGEST_FILE_LOCATION',
-    'auth_digest_realm':              'DIGEST_REALM',
-    'auth_ldap_anon_bind_uid':        'LDAP_ANON_BIND_UID',
-    'auth_ldap_anon_bind_passwd':     'LDAP_ANON_BIND_PASSWD',
-    'auth_ldap_given_name_attribute': 'LDAP_GIVEN_NAME_ATTRIBUTE',
-    'auth_ldap_surname_attribute':    'LDAP_SURNAME_ATTRIBUTE',
-    'auth_ldap_full_name_attribute':  'LDAP_FULL_NAME_ATTRIBUTE',
-    'auth_ldap_email_domain':         'LDAP_EMAIL_DOMAIN',
-    'auth_ldap_email_attribute':      'LDAP_EMAIL_ATTRIBUTE',
-    'auth_ldap_tls':                  'LDAP_TLS',
-    'auth_ldap_base_dn':              'LDAP_BASE_DN',
-    'auth_ldap_uid':                  'LDAP_UID',
-    'auth_ldap_uid_mask':             'LDAP_UID_MASK',
-    'auth_ldap_uri':                  'LDAP_URI',
-    'auth_ad_domain_name':            'AD_DOMAIN_NAME',
-    'auth_ad_use_tls':                'AD_USE_TLS',
-    'auth_ad_find_dc_from_dns':       'AD_FIND_DC_FROM_DNS',
-    'auth_ad_domain_controller':      'AD_DOMAIN_CONTROLLER',
-    'auth_ad_ou_name':                'AD_OU_NAME',
-    'auth_ad_group_name':             'AD_GROUP_NAME',
-    'auth_ad_search_root':            'AD_SEARCH_ROOT',
-    'auth_ad_recursion_depth':        'AD_RECURSION_DEPTH',
-    'auth_x509_username_field':       'X509_USERNAME_FIELD',
-    'auth_x509_username_regex':       'X509_USERNAME_REGEX',
-    'auth_x509_autocreate_users':     'X509_AUTOCREATE_USERS',
-    'auth_nis_email_domain':          'NIS_EMAIL_DOMAIN',
-    'site_domain_method':             'DOMAIN_METHOD',
+    'auth_digest_file_location':       'DIGEST_FILE_LOCATION',
+    'auth_digest_realm':               'DIGEST_REALM',
+    'auth_ldap_anon_bind_uid':         'LDAP_ANON_BIND_UID',
+    'auth_ldap_anon_bind_passwd':      'LDAP_ANON_BIND_PASSWD',
+    'auth_ldap_given_name_attribute':  'LDAP_GIVEN_NAME_ATTRIBUTE',
+    'auth_ldap_surname_attribute':     'LDAP_SURNAME_ATTRIBUTE',
+    'auth_ldap_full_name_attribute':   'LDAP_FULL_NAME_ATTRIBUTE',
+    'auth_ldap_email_domain':          'LDAP_EMAIL_DOMAIN',
+    'auth_ldap_email_attribute':       'LDAP_EMAIL_ATTRIBUTE',
+    'auth_ldap_tls':                   'LDAP_TLS',
+    'auth_ldap_base_dn':               'LDAP_BASE_DN',
+    'auth_ldap_uid':                   'LDAP_UID',
+    'auth_ldap_uid_mask':              'LDAP_UID_MASK',
+    'auth_ldap_uri':                   'LDAP_URI',
+    'auth_ad_domain_name':             'AD_DOMAIN_NAME',
+    'auth_ad_use_tls':                 'AD_USE_TLS',
+    'auth_ad_find_dc_from_dns':        'AD_FIND_DC_FROM_DNS',
+    'auth_ad_domain_controller':       'AD_DOMAIN_CONTROLLER',
+    'auth_ad_ou_name':                 'AD_OU_NAME',
+    'auth_ad_group_name':              'AD_GROUP_NAME',
+    'auth_ad_search_root':             'AD_SEARCH_ROOT',
+    'auth_ad_recursion_depth':         'AD_RECURSION_DEPTH',
+    'auth_x509_username_field':        'X509_USERNAME_FIELD',
+    'auth_x509_custom_username_field': 'X509_CUSTOM_USERNAME_FIELD',
+    'auth_x509_username_regex':        'X509_USERNAME_REGEX',
+    'auth_x509_autocreate_users':      'X509_AUTOCREATE_USERS',
+    'auth_nis_email_domain':           'NIS_EMAIL_DOMAIN',
+    'site_domain_method':              'DOMAIN_METHOD',
 }
 settings_map.update(get_django_settings_map())
 settings_map.update(log_siteconfig.settings_map)
+settings_map.update(recaptcha_siteconfig.settings_map)
 
 # Settings for django-storages
 settings_map.update({
@@ -116,67 +127,79 @@ settings_map.update({
 # All the default values for settings.
 defaults = get_django_defaults()
 defaults.update(log_siteconfig.defaults)
+defaults.update(recaptcha_siteconfig.defaults)
+defaults.update(avatar_services.get_siteconfig_defaults())
 defaults.update({
-    'auth_ldap_anon_bind_uid':             '',
-    'auth_ldap_anon_bind_passwd':          '',
-    'auth_ldap_email_domain':              '',
-    'auth_ldap_tls':                       False,
-    'auth_ldap_uid':                       'uid',
-    'auth_ldap_uid_mask':                  '',
-    'auth_ldap_uri':                       '',
-    'auth_nis_email_domain':               '',
-    'auth_require_sitewide_login':         False,
-    'auth_custom_backends':                [],
-    'auth_enable_registration':            True,
-    'auth_x509_username_field':            'SSL_CLIENT_S_DN_CN',
-    'auth_x509_username_regex':            '',
-    'auth_x509_autocreate_users':          False,
-    'company':                             '',
-    'default_use_rich_text':               True,
-    'diffviewer_context_num_lines':        5,
-    'diffviewer_include_space_patterns':   [],
-    'diffviewer_max_diff_size':            0,
-    'diffviewer_paginate_by':              20,
-    'diffviewer_paginate_orphans':         10,
-    'diffviewer_syntax_highlighting':      True,
+    'auth_ldap_anon_bind_uid': '',
+    'auth_ldap_anon_bind_passwd': '',
+    'auth_ldap_email_domain': '',
+    'auth_ldap_tls': False,
+    'auth_ldap_uid': 'uid',
+    'auth_ldap_uid_mask': '',
+    'auth_ldap_uri': '',
+    'auth_nis_email_domain': '',
+    'auth_registration_show_captcha': False,
+    'auth_require_sitewide_login': False,
+    'auth_custom_backends': [],
+    'auth_enable_registration': True,
+    'auth_x509_username_field': 'SSL_CLIENT_S_DN_CN',
+    'auth_x509_username_regex': '',
+    'auth_x509_autocreate_users': False,
+    'company': '',
+    'default_use_rich_text': True,
+    'diffviewer_context_num_lines': 5,
+    'diffviewer_include_space_patterns': [],
+    'diffviewer_max_diff_size': 0,
+    'diffviewer_paginate_by': 20,
+    'diffviewer_paginate_orphans': 10,
+    'diffviewer_syntax_highlighting': True,
     'diffviewer_syntax_highlighting_threshold': 0,
     'diffviewer_show_trailing_whitespace': True,
-    'integration_gravatars':               True,
-    'mail_send_review_mail':               False,
-    'mail_send_new_user_mail':             False,
-    'mail_enable_autogenerated_header':    True,
-    'search_enable':                       False,
-    'send_support_usage_stats':            True,
-    'site_domain_method':                  'http',
+    'mail_send_review_mail': False,
+    'mail_send_new_user_mail': False,
+    'mail_send_password_changed_mail': False,
+    'mail_enable_autogenerated_header': True,
+    'mail_from_spoofing': EmailMessage.FROM_SPOOFING_SMART,
+    'search_enable': False,
+    'send_support_usage_stats': True,
+    'site_domain_method': 'http',
 
-    # TODO: Allow relative paths for the index file later on.
-    'search_index_file': os.path.join(settings.SITE_DATA_DIR,
-                                      'search-index'),
+    'privacy_enable_user_consent': False,
+    'privacy_info_html': None,
+    'privacy_policy_url': None,
+    'terms_of_service_url': None,
+
     'search_results_per_page': 20,
+    'search_backend_id': WhooshBackend.search_backend_id,
+    'search_backend_settings': {},
+    'search_on_the_fly_indexing': False,
 
     # Overwrite this.
     'site_media_url': settings.SITE_ROOT + "media/",
 })
 
 defaults.update({
-    'aws_access_key_id':       '',
-    'aws_secret_access_key':   '',
-    'aws_headers':             {},
-    'aws_calling_format':      2,
-    'aws_default_acl':         'public-read',
-    'aws_querystring_auth':    False,
-    'aws_querystring_active':  False,
-    'aws_querystring_expire':  60,
-    'aws_s3_secure_urls':      False,
-    'aws_s3_bucket_name':      '',
-    'swift_auth_url':          '',
-    'swift_username':          '',
-    'swift_key':               '',
-    'swift_auth_version':      '1',
-    'swift_container_name':    '',
-    'couchdb_default_server':  '',
+    'aws_access_key_id': '',
+    'aws_calling_format': 2,
+    'aws_default_acl': 'public-read',
+    'aws_headers': {},
+    'aws_querystring_active': False,
+    'aws_querystring_auth': False,
+    'aws_querystring_expire': 60,
+    'aws_s3_bucket_name': '',
+    'aws_s3_secure_urls': False,
+    'aws_secret_access_key': '',
+    'couchdb_default_server': '',
     'couchdb_storage_options': {},
+    'swift_auth_url': '',
+    'swift_auth_version': '1',
+    'swift_container_name': '',
+    'swift_key': '',
+    'swift_username': '',
 })
+
+
+_original_webapi_auth_backends = settings.WEB_API_AUTH_BACKENDS
 
 
 def load_site_config(full_reload=False):
@@ -185,6 +208,8 @@ def load_site_config(full_reload=False):
     This populates the Django settings object with any keys that need to be
     there.
     """
+    global _original_webapi_auth_backends
+
     def apply_setting(settings_key, db_key, default=None):
         """Apply the given siteconfig value to the Django settings object."""
         db_value = siteconfig.settings.get(db_key)
@@ -195,14 +220,25 @@ def load_site_config(full_reload=False):
             setattr(settings, settings_key, default)
 
     def update_haystack_settings():
-        """Update the haystack settings with settings in site config."""
-        apply_setting("HAYSTACK_CONNECTIONS", None, {
-            'default': {
-                'ENGINE': settings.HAYSTACK_CONNECTIONS['default']['ENGINE'],
-                'PATH': (siteconfig.get('search_index_file') or
-                         defaults['search_index_file']),
-            },
-        })
+        """Update the haystack settings in site config."""
+        search_backend_id = (siteconfig.get('search_backend_id') or
+                             defaults['search_backend_id'])
+        search_backend = search_backend_registry.get_search_backend(
+            search_backend_id)
+
+        if not search_backend:
+            raise ImproperlyConfigured(_(
+                'The search engine "%s" could not be found. If this is '
+                'provided by an extension, you will have to make sure that '
+                'extension is enabled.'
+                % search_backend_id
+            ))
+
+        apply_setting(
+            'HAYSTACK_CONNECTIONS', None,
+            {
+                'default': search_backend.configuration,
+            })
 
         # Re-initialize Haystack's connection information to use the updated
         # settings.
@@ -278,7 +314,7 @@ def load_site_config(full_reload=False):
 
     # Set the auth backends
     auth_backend_id = siteconfig.settings.get("auth_backend", "builtin")
-    builtin_backend_obj = get_registered_auth_backend('builtin')
+    builtin_backend_obj = auth_backends.get('backend_id', 'builtin')
     builtin_backend = "%s.%s" % (builtin_backend_obj.__module__,
                                  builtin_backend_obj.__name__)
 
@@ -295,7 +331,7 @@ def load_site_config(full_reload=False):
         if builtin_backend not in custom_backends:
             settings.AUTHENTICATION_BACKENDS += (builtin_backend,)
     else:
-        backend = get_registered_auth_backend(auth_backend_id)
+        backend = auth_backends.get('backend_id', auth_backend_id)
 
         if backend and backend is not builtin_backend_obj:
             settings.AUTHENTICATION_BACKENDS = \
@@ -345,6 +381,20 @@ def load_site_config(full_reload=False):
         'reviewboard.webapi.auth_backends.TokenAuthBackend',
     )
 
+    # Reset the WebAPI auth backends in case OAuth2 has become disabled.
+    settings.WEB_API_AUTH_BACKENDS = _original_webapi_auth_backends
+    reset_auth_backends()
+
+    if oauth2_service_feature.is_enabled():
+        settings.AUTHENTICATION_BACKENDS += (
+            'reviewboard.webapi.auth_backends.OAuth2TokenAuthBackend',
+        )
+
+        settings.WEB_API_AUTH_BACKENDS += (
+            'djblets.webapi.auth.backends.oauth2_tokens'
+            '.WebAPIOAuth2TokenAuthBackend',
+        )
+
     # Set the storage backend
     storage_backend = siteconfig.settings.get('storage_backend', 'builtin')
 
@@ -384,9 +434,16 @@ def load_site_config(full_reload=False):
     else:
         os.environ[b'HTTPS'] = b'off'
 
+    # Migrate over any legacy avatar backend settings.
+    if avatar_services.migrate_settings(siteconfig):
+        dirty = True
+
     # Save back changes if they have been made
     if dirty:
         siteconfig.save()
+
+    # Reload privacy consent requirements
+    recompute_privacy_consents()
 
     site_settings_loaded.send(sender=None)
 

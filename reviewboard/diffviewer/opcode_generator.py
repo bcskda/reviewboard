@@ -42,10 +42,35 @@ class DiffOpcodeGenerator(object):
 
     TAB_SIZE = 8
 
-    def __init__(self, differ, diff=None, interdiff=None):
+    def __init__(self, differ, diff=None, interdiff=None, request=None,
+                 **kwargs):
+        """Initialize the opcode generator.
+
+        Version Changed:
+            3.0.18:
+            Added the ``request`` and ``**kwargs`` parameters.
+
+        Args:
+            differ (reviewboard.diffviewer.differ.Differ):
+                The differ being used to generate the diff.
+
+            diff (bytes, optional):
+                The raw contents for the diff.
+
+            interdiff (bytes, optional):
+                The raw contents for the diff on the other end of an
+                interdiff range, if generating an interdiff.
+
+            request (django.http.HttpRequest):
+                The HTTP request from the client.
+
+            **kwargs (dict):
+                Additional keyword arguments, for future expansion.
+        """
         self.differ = differ
         self.diff = diff
         self.interdiff = interdiff
+        self.request = request
 
     def __iter__(self):
         """Returns opcodes from the differ with extra metadata.
@@ -74,11 +99,27 @@ class DiffOpcodeGenerator(object):
             yield opcodes
 
     def _apply_processors(self, opcodes):
+        """Apply any diff processors to the generated list of opcodes.
+
+        If generating an interdiff, this will apply a filter to remove any
+        unmodified lines.
+
+        Args:
+            opcodes (list of tuple):
+                The list of generated diff opcodes to process.
+
+        Yields:
+            tuple:
+            A processed opcode.
+        """
         if self.diff and self.interdiff:
             # Filter out any lines unrelated to these changes from the
             # interdiff. This will get rid of any merge information.
-            opcodes = filter_interdiff_opcodes(opcodes, self.diff,
-                                               self.interdiff)
+            opcodes = filter_interdiff_opcodes(
+                opcodes=opcodes,
+                filediff_data=self.diff,
+                interfilediff_data=self.interdiff,
+                request=self.request)
 
         for opcode in opcodes:
             yield opcode
@@ -294,31 +335,57 @@ class DiffOpcodeGenerator(object):
         # The algorithm will be documented as we go in the code.
         #
         # We start by looping through all the inserted groups.
-        for insert in self.inserts:
-            self._compute_move_for_insert(*insert)
+        r_move_indexes_used = set()
 
-    def _compute_move_for_insert(self, itag, ii1, ii2, ij1, ij2, imeta):
+        for insert in self.inserts:
+            self._compute_move_for_insert(r_move_indexes_used, *insert)
+
+    def _compute_move_for_insert(self, r_move_indexes_used, itag, ii1, ii2,
+                                 ij1, ij2, imeta):
+        """Compute move information for a given insert-like chunk.
+
+        Args:
+            r_move_indexes_used (set):
+                All remove indexes that have already been included in a move
+                range.
+
+            itag (unicode):
+                The chunk tag for the insert (``insert`` or ``replace``).
+
+            ii1 (int):
+                The 0-based start of the chunk on the original side.
+
+            ii2 (int):
+                The 0-based start of the next chunk on the original side.
+
+            ij1 (int):
+                The 0-based start of the chunk on the modification side.
+
+            ij2 (int):
+                The 0-based start of the next chunk on the modification side.
+
+            imeta (dict):
+                The metadata for the chunk for the modification, where the move
+                ranges may be stored.
+        """
         # Store some state on the range we'll be working with inside this
         # insert group.
-        #
-        # i_move_cur is the current location inside the insert group
-        # (from ij1 through ij2).
-        #
-        # i_move_range is the current range of consecutive lines that
-        # we'll use for a move. Each line in this range has a
-        # corresponding consecutive delete line.
-        #
-        # r_move_ranges represents deleted move ranges. The key is a
-        # string in the form of "{i1}-{i2}-{j1}-{j2}", with those
-        # positions taken from the remove group for the line. The value
-        # is an instance of MoveRange. The values in MoveRange are used to
-        # quickly locate deleted lines we've found that match the inserted
-        # lines, so we can assemble ranges later.
-        i_move_cur = ij1
-        i_move_range = MoveRange(i_move_cur, i_move_cur)
-        r_move_ranges = {}  # key -> (start, end, group)
-        move_key = None
 
+        # The current location inside the insert group (from ij1 through ij2).
+        i_move_cur = ij1
+
+        # The current range of consecutive lines that we'll use for a move.
+        # Each line in this range has a corresponding consecutive delete line.
+        i_move_range = MoveRange(i_move_cur, i_move_cur)
+
+        # The deleted move ranges. The key is a string in the form of
+        # "{i1}-{i2}-{j1}-{j2}", with those positions taken from the remove
+        # group for the line. The value is an instance of MoveRange. The values
+        # in MoveRange are used to quickly locate deleted lines we've found
+        # that match the inserted lines, so we can assemble ranges later.
+        r_move_ranges = {}  # key -> (start, end, group)
+
+        move_key = None
         is_replace = (itag == 'replace')
 
         # Loop through every location from ij1 through ij2 - 1 until we've
@@ -347,7 +414,13 @@ class DiffOpcodeGenerator(object):
                 #
                 # If there isn't any move information for this line, we'll
                 # simply add it to the move ranges.
-                for ri, rgroup, rgroup_index in self.removes.get(iline, []):
+                for ri, rgroup, rgroup_index in self.removes[iline]:
+                    # Ignore any lines that have already been processed as
+                    # part of a move, so we don't end up with incorrect blocks
+                    # of lines being matched.
+                    if ri in r_move_indexes_used:
+                        continue
+
                     r_move_range = r_move_ranges.get(move_key)
 
                     if not r_move_range or ri != r_move_range.end + 1:
@@ -378,6 +451,11 @@ class DiffOpcodeGenerator(object):
                             r_move_ranges[move_key] = \
                                 MoveRange(ri, ri, [(rgroup, rgroup_index)])
                             updated_range = True
+
+                    if updated_range:
+                        # We found a range we were able to update. Don't
+                        # attempt any more matches for removed lines.
+                        break
 
                 if not updated_range and r_move_ranges:
                     # We didn't find a move range that this line is a part
@@ -480,6 +558,14 @@ class DiffOpcodeGenerator(object):
 
                         imeta.setdefault('moved-from', {}).update(
                             dict(zip(i_range, r_range)))
+
+                        # Record each of the positions in the removed range
+                        # as used, so that they're not factored in again when
+                        # determining possible ranges for future moves.
+                        #
+                        # We'll use the r_range above, but normalize back to
+                        # 0-based indexes.
+                        r_move_indexes_used.update(r - 1 for r in r_range)
 
                 # Reset the state for the next range.
                 move_key = None

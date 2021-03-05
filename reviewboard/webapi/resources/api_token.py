@@ -13,7 +13,7 @@ from djblets.webapi.errors import (DOES_NOT_EXIST, INVALID_FORM_DATA,
                                    NOT_LOGGED_IN, PERMISSION_DENIED,
                                    WebAPITokenGenerationError)
 
-from reviewboard.webapi.base import WebAPIResource
+from reviewboard.webapi.base import ImportExtraDataError, WebAPIResource
 from reviewboard.webapi.decorators import webapi_check_local_site
 from reviewboard.webapi.errors import TOKEN_GENERATION_FAILED
 from reviewboard.webapi.models import WebAPIToken
@@ -31,6 +31,7 @@ class APITokenResource(WebAPIResource):
     verbose_name = 'API Token'
 
     api_token_access_allowed = False
+    oauth2_token_access_allowed = False
 
     added_in = '2.5'
 
@@ -46,12 +47,12 @@ class APITokenResource(WebAPIResource):
         'time_added': {
             'type': six.text_type,
             'description': 'The date and time that the token was added '
-                           '(in YYYY-MM-DD HH:MM:SS format).',
+                           '(in ``YYYY-MM-DD HH:MM:SS`` format).',
         },
         'last_updated': {
             'type': six.text_type,
             'description': 'The date and time that the token was last '
-                           'updated (in YYYY-MM-DD HH:MM:SS format).',
+                           'updated (in ``YYYY-MM-DD HH:MM:SS`` format).',
         },
         'note': {
             'type': six.text_type,
@@ -127,6 +128,9 @@ class APITokenResource(WebAPIResource):
 
         Note that this may, in theory, fail due to too many token collisions.
         If that happens, please re-try the request.
+
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         try:
             user = resources.user.get_object(request, *args, **kwargs)
@@ -156,8 +160,12 @@ class APITokenResource(WebAPIResource):
             return TOKEN_GENERATION_FAILED.with_message(six.text_type(e))
 
         if extra_fields:
-            self.import_extra_data(token, token.extra_data, extra_fields)
-            token.save()
+            try:
+                self.import_extra_data(token, token.extra_data, extra_fields)
+            except ImportExtraDataError as e:
+                return e.error_payload
+
+            token.save(update_fields=('extra_data',))
 
         return 201, {
             self.item_result_key: token,
@@ -186,6 +194,7 @@ class APITokenResource(WebAPIResource):
         """Updates the information on an existing API token.
 
         The note, policy, and extra data on the token may be updated.
+        See :ref:`webapi2.0-extra-data` for more information.
         """
         try:
             token = self.get_object(request, *args, **kwargs)
@@ -209,13 +218,27 @@ class APITokenResource(WebAPIResource):
                 }
 
         if extra_fields:
-            self.import_extra_data(token, token.extra_data, extra_fields)
+            try:
+                self.import_extra_data(token, token.extra_data, extra_fields)
+            except ImportExtraDataError as e:
+                return e.error_payload
 
         token.save()
 
         return 200, {
             self.item_result_key: token,
         }
+
+    @augment_method_from(WebAPIResource)
+    def delete(self, *args, **kwargs):
+        """Delete the API token, invalidating all clients using it.
+
+        The API token will be removed from the user's account, and will no
+        longer be usable for authentication.
+
+        After deletion, this will return a :http:`204`.
+        """
+        pass
 
     @webapi_check_local_site
     @augment_method_from(WebAPIResource)

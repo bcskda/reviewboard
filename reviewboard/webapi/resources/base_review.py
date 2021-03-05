@@ -12,7 +12,7 @@ from djblets.webapi.errors import (DOES_NOT_EXIST, NOT_LOGGED_IN,
 
 from reviewboard.reviews.errors import PublishError
 from reviewboard.reviews.models import Review
-from reviewboard.webapi.base import WebAPIResource
+from reviewboard.webapi.base import ImportExtraDataError, WebAPIResource
 from reviewboard.webapi.decorators import webapi_check_local_site
 from reviewboard.webapi.errors import PUBLISH_ERROR
 from reviewboard.webapi.mixins import MarkdownFieldsMixin
@@ -27,6 +27,12 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
     """
     model = Review
     fields = {
+        'absolute_url': {
+            'type': six.text_type,
+            'description': "The absolute URL to the review request's page on "
+                           "the site.",
+            'added_in': '3.0',
+        },
         'body_bottom': {
             'type': six.text_type,
             'description': 'The review content below the comments.',
@@ -35,7 +41,7 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
         'body_bottom_text_type': {
             'type': MarkdownFieldsMixin.TEXT_TYPES,
             'description': 'The current or forced text type for the '
-                           'body_bottom field.',
+                           '``body_bottom`` field.',
             'added_in': '2.0.12',
         },
         'body_top': {
@@ -46,7 +52,7 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
         'body_top_text_type': {
             'type': MarkdownFieldsMixin.TEXT_TYPES,
             'description': 'The current or forced text type for the '
-                           'body_top field.',
+                           '``body_top`` field.',
             'added_in': '2.0.12',
         },
         'extra_data': {
@@ -73,15 +79,15 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
             'type': MarkdownFieldsMixin.TEXT_TYPES,
             'description': 'Formerly responsible for indicating the text '
                            'type for text fields. Replaced by '
-                           'body_top_text_type and body_bottom_text_type '
-                           'in 2.0.12.',
+                           '``body_top_text_type`` and '
+                           '``body_bottom_text_type`` in 2.0.12.',
             'added_in': '2.0',
             'deprecated_in': '2.0.12',
         },
         'timestamp': {
             'type': six.text_type,
             'description': 'The date and time that the review was posted '
-                           '(in YYYY-MM-DD HH:MM:SS format).',
+                           '(in ``YYYY-MM-DD HH:MM:SS`` format).',
         },
         'user': {
             'type': UserResource,
@@ -103,7 +109,7 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
         },
         'body_top_text_type': {
             'type': MarkdownFieldsMixin.SAVEABLE_TEXT_TYPES,
-            'description': 'The text type used for the body_top '
+            'description': 'The text type used for the ``body_top`` '
                            'field.',
             'added_in': '2.0.12',
         },
@@ -114,7 +120,7 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
         },
         'body_bottom_text_type': {
             'type': MarkdownFieldsMixin.SAVEABLE_TEXT_TYPES,
-            'description': 'The text type used for the body_bottom '
+            'description': 'The text type used for the ``body_bottom`` '
                            'field.',
             'added_in': '2.0.12',
         },
@@ -134,14 +140,20 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
         },
         'text_type': {
             'type': MarkdownFieldsMixin.SAVEABLE_TEXT_TYPES,
-            'description': 'The mode for the body_top and body_bottom '
+            'description': 'The mode for the ``body_top`` and ``body_bottom`` '
                            'text fields.\n'
                            '\n'
                            'This is deprecated. Please use '
-                           'body_top_text_type and '
-                           'body_bottom_text_type instead.',
+                           '``body_top_text_type`` and '
+                           '``body_bottom_text_type`` instead.',
             'added_in': '2.0',
             'deprecated_in': '2.0.12',
+        },
+        'publish_to_owner_only': {
+            'type': bool,
+            'description': 'If true, the review will only send an e-mail '
+                           'to the owner of the review request.',
+            'added_in': '3.0',
         },
     }
 
@@ -168,6 +180,9 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
 
     def has_delete_permissions(self, request, review, *args, **kwargs):
         return review.is_mutable_by(request.user)
+
+    def serialize_absolute_url_field(self, obj, request, **kwargs):
+        return request.build_absolute_uri(obj.get_absolute_url())
 
     def serialize_body_top_text_type_field(self, obj, **kwargs):
         # This will be overridden by MarkdownFieldsMixin.
@@ -221,7 +236,7 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
             # redirect the user to the right place.
             status_code = 303  # See Other
 
-        result = self._update_review(request, review, *args, **kwargs)
+        result = self.update_review(request, review, *args, **kwargs)
 
         if not isinstance(result, tuple) or result[0] != 200:
             return result
@@ -245,7 +260,8 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
 
         The only special field is ``public``, which, if set to true, will
         publish the review. The review will then be made publicly visible. Once
-        public, the review cannot be modified or made private again.
+        public, the review cannot be modified or made private again
+        with the exception of removing a ship it from review.
         """
         try:
             resources.review_request.get_object(request, *args, **kwargs)
@@ -253,7 +269,7 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
         except ObjectDoesNotExist:
             return DOES_NOT_EXIST
 
-        return self._update_review(request, review, *args, **kwargs)
+        return self.update_review(request, review, *args, **kwargs)
 
     @webapi_check_local_site
     @augment_method_from(WebAPIResource)
@@ -280,27 +296,70 @@ class BaseReviewResource(MarkdownFieldsMixin, WebAPIResource):
         """
         pass
 
-    def _update_review(self, request, review, public=None, extra_fields={},
-                       *args, **kwargs):
-        """Common function to update fields on a draft review."""
+    def update_review(self, request, review, public=None,
+                      publish_to_owner_only=False, extra_fields={},
+                      ship_it=None, **kwargs):
+        """Update an existing review based on the requested data.
+
+        This will modify a review, setting new fields requested by the
+        caller.
+
+        Args:
+            request (django.http.HttpRequest):
+                The HTTP request from the client.
+
+            review (reviewboard.reviews.models.review.Review):
+                The review being modified.
+
+            public (bool, optional):
+                Whether the review is being made public for the first
+                time.
+
+            publish_to_owner_only (bool, optional):
+                Whether an e-mail for the published review should only be
+                sent to the owner of the review request. This is ignored if
+                ``public`` is not ``True``.
+
+            extra_fields (dict, optional):
+                Extra fields from the request not otherwise handled by the
+                API resource. Any ``extra_data`` modifications from this will
+                be applied to the comment.
+
+            ship_it (bool, optional):
+                The new Ship It state for the review.
+
+            **kwargs (dict):
+                Keyword arguments representing additional fields handled by
+                the API resource.
+
+        Returns:
+            tuple or djblets.webapi.errors.WebAPIError:
+            Either a successful payload containing the review, or an error
+            payload.
+        """
         if not self.has_modify_permissions(request, review):
             # Can't modify published reviews or those not belonging
             # to the user.
             return self.get_no_access_error(request)
 
-        if 'ship_it' in kwargs:
-            review.ship_it = kwargs['ship_it']
+        if ship_it is not None:
+            review.ship_it = ship_it
 
         self.set_text_fields(review, 'body_top', **kwargs)
         self.set_text_fields(review, 'body_bottom', **kwargs)
 
-        self.import_extra_data(review, review.extra_data, extra_fields)
+        try:
+            self.import_extra_data(review, review.extra_data, extra_fields)
+        except ImportExtraDataError as e:
+            return e.error_payload
 
         review.save()
 
         if public:
             try:
-                review.publish(user=request.user)
+                review.publish(user=request.user,
+                               to_owner_only=publish_to_owner_only,
+                               request=request)
             except PublishError as e:
                 return PUBLISH_ERROR.with_message(six.text_type(e))
 

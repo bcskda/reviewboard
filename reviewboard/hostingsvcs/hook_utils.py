@@ -85,10 +85,10 @@ def close_review_request(review_request, review_request_id, description):
         return
 
     # Closing as submitted will fail if the review request was never public. In
-    # this case, publish first (which will generate an e-mail, but that's
-    # probably desirable anyway).
+    # this case, publish first.
     if not review_request.public:
-        review_request.publish(review_request.submitter)
+        review_request.publish(review_request.submitter, trivial=True,
+                               validate_fields=False)
 
     review_request.close(ReviewRequest.SUBMITTED, description=description)
     logging.debug('Review request #%s is set to %s.',
@@ -138,10 +138,10 @@ def close_all_review_requests(review_request_id_to_commits, local_site_name,
 
     # Check if there are any listed that we couldn't find, and log them.
     if len(review_request_ids) != len(review_requests):
-        id_to_review_request = dict(*[
+        id_to_review_request = dict(
             (review_request.display_id, review_request)
             for review_request in review_requests
-        ])
+        )
 
         for review_request_id in review_request_ids:
             if review_request_id not in id_to_review_request:

@@ -22,6 +22,8 @@ RB.TextCommentRowSelector = Backbone.View.extend({
         'mouseup': '_onMouseUp',
         'mouseover': '_onMouseOver',
         'mouseout': '_onMouseOut',
+        'touchstart': '_onTouchStart',
+        'touchend': '_onTouchEnd',
         'touchmove': '_onTouchMove',
         'touchcancel': '_onTouchCancel'
     },
@@ -503,12 +505,33 @@ RB.TextCommentRowSelector = Backbone.View.extend({
     _copySelectionToClipboard: function(clipboardData) {
         var sel = window.getSelection(),
             s = '',
+            excludeTBodyClass,
             tdClass,
             range,
             doc,
             nodes,
             i,
             j;
+
+        function findPreTags(result, parentEl, tdClass, excludeTBodyClass) {
+            var node,
+                i;
+
+            for (i = 0; i < parentEl.children.length; i++) {
+                node = parentEl.children[i];
+
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    if (node.tagName === 'PRE') {
+                        result.push(node);
+                    } else if ((node.tagName !== 'TD' ||
+                                $(node).hasClass(tdClass)) &&
+                               (node.tagName !== 'TBODY' ||
+                                !$(node).hasClass(excludeTBodyClass))) {
+                        findPreTags(result, node, tdClass, excludeTBodyClass);
+                    }
+                }
+            }
+        }
 
         if (this._newlineChar === null) {
             /*
@@ -526,8 +549,10 @@ RB.TextCommentRowSelector = Backbone.View.extend({
 
         if (this._selectedCellIndex === 3 || this.$el.hasClass('newfile')) {
             tdClass = 'r';
+            excludeTBodyClass = 'delete';
         } else {
             tdClass = 'l';
+            excludeTBodyClass = 'insert';
         }
 
         for (i = 0; i < sel.rangeCount; i++) {
@@ -537,14 +562,15 @@ RB.TextCommentRowSelector = Backbone.View.extend({
                 continue;
             }
 
+            nodes = [];
             doc = range.cloneContents();
-            nodes = doc.querySelectorAll('td.' + tdClass + ' pre');
+            findPreTags(nodes, doc, tdClass, excludeTBodyClass);
 
-            /*
-             * The selection spans multiple rows. Find the blocks of text
-             * in the column we want, and copy those to the clipboard.
-             */
             if (nodes.length > 0) {
+                /*
+                 * The selection spans multiple rows. Find the blocks of text
+                 * in the column we want, and copy those to the clipboard.
+                 */
                 for (j = 0; j < nodes.length; j++) {
                     s += nodes[j].textContent;
 
@@ -564,7 +590,7 @@ RB.TextCommentRowSelector = Backbone.View.extend({
                         s += this._newlineChar;
                     }
                 }
-            } else if (sel.rangeCount === 1) {
+            } else {
                 /*
                  * If we're here, then we selected a subset of a single
                  * cell. There was only one Range, and no <pre> tags as
@@ -573,7 +599,7 @@ RB.TextCommentRowSelector = Backbone.View.extend({
                  * (We don't really need to break here, but we're going to
                  * in order to be clear that we're completely done.)
                  */
-                s = $(doc).text();
+                s += $(doc).text();
                 break;
             }
         }
@@ -696,29 +722,92 @@ RB.TextCommentRowSelector = Backbone.View.extend({
         }
     },
 
-    /*
-     * Handles touch move events.
+    /**
+     * Handle the beginning of a touch event.
      *
-     * Simulates mouse clicks/drags for line number selection.
+     * If the user is touching a line number, then this will begin tracking
+     * a new comment selection state, allowing them to either open an existing
+     * comment or create a new one.
+     *
+     * Args:
+     *     e (Event):
+     *         The ``touchstart`` event.
      */
-    _onTouchMove: function(e) {
+    _onTouchStart: function(e) {
         var firstTouch = e.originalEvent.targetTouches[0],
-            target = document.elementFromPoint(firstTouch.pageX,
-                                               firstTouch.pageY),
-            $node = this._getActualLineNumCell($(target)),
-            $row = node.parent();
+            $node = this._getActualLineNumCell($(firstTouch.target));
 
-        if (   this._lastSeenIndex !== $row[0].rowIndex
-            && this._isLineNumCell($node[0])) {
-            this._removeOldRows($row);
-            this._addRow($row);
+        if ($node !== null && this._isLineNumCell($node[0])) {
+            e.preventDefault();
+            this._begin($node.parent());
         }
     },
 
-    /*
-     * Handles touch cancel events.
+    /**
+     * Handle the end of a touch event.
      *
-     * Resets the line number selection.
+     * If the user ended on a line number, then this will either open an
+     * existing comment (if the result was a single-line selection on the
+     * line of an existing comment) or create a new comment spanning all
+     * selected lines.
+     *
+     * If they ended outside of the line numbers column, then this will
+     * simply reset the selection.
+     *
+     * Args:
+     *     e (Event):
+     *         The ``touchend`` event.
+     */
+    _onTouchEnd: function(e) {
+        var firstTouch = e.originalEvent.changedTouches[0],
+            target = document.elementFromPoint(firstTouch.clientX,
+                                               firstTouch.clientY),
+            $node = this._getActualLineNumCell($(target));
+
+        if ($node !== null && this._isLineNumCell($node[0])) {
+            e.preventDefault();
+            this._end($node.parent());
+        }
+
+        this._reset();
+    },
+
+    /**
+     * Handle touch movement events.
+     *
+     * If selecting up or down line numbers, this will update the selection
+     * to span all rows from the original line number first touched and the
+     * line number currently being touched.
+     *
+     * Args:
+     *     e (Event):
+     *         The ``touchmove`` event.
+     */
+    _onTouchMove: function(e) {
+        var firstTouch = e.originalEvent.targetTouches[0],
+            target = document.elementFromPoint(firstTouch.clientX,
+                                               firstTouch.clientY),
+            $node = this._getActualLineNumCell($(target)),
+            $row;
+
+        if ($node !== null) {
+            $row = $node.parent();
+
+            if (   this._lastSeenIndex !== $row[0].rowIndex
+                && this._isLineNumCell($node[0])) {
+                e.preventDefault();
+
+                this._removeOldRows($row);
+                this._addRow($row);
+            }
+        }
+    },
+
+    /**
+     * Handle touch cancellation events.
+     *
+     * This resets the line number selection. The user will need to begin the
+     * selection again.
      */
     _onTouchCancel: function() {
         this._reset();

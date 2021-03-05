@@ -4,7 +4,7 @@
  * This renders the datagrid, handles events, and allows for multi-row
  * actions.
  */
-RB.DatagridPageView = Backbone.View.extend({
+RB.DatagridPageView = RB.PageView.extend({
     RELOAD_INTERVAL_MS: 5 * 60 * 1000,
 
     /* The View class to use for an actions menu, if any. */
@@ -19,6 +19,8 @@ RB.DatagridPageView = Backbone.View.extend({
      * Initializes the datagrid page.
      */
     initialize: function(options) {
+        RB.PageView.prototype.initialize.call(this, options);
+
         options = options || {};
 
         this.periodicReload = !!options.periodicReload;
@@ -38,6 +40,27 @@ RB.DatagridPageView = Backbone.View.extend({
      * Renders the datagrid page view, and begins listening for events.
      */
     render: function() {
+        RB.InfoboxManagerView.getInstance().setPositioning(
+            RB.ReviewRequestInfoboxView,
+            {
+                /*
+                 * The order on the side matters. If the Summary column is
+                 * on the left-hand side of the datagrid, and "l" is first,
+                 * it can end up taking priority, even if "L" was a better
+                 * fit (since, if the infobox would need to be pushed a bit
+                 * to fit on screen, it will prefer "l"). If the column is on
+                 * the right-hand side of the dashboard, it will prefer "l",
+                 * given the room available (taking into account the sidebar).
+                 *
+                 * So "L" is a better priority for the common use, and "l"
+                 * works well as a fallback.
+                 */
+                side: 'Ll',
+                LDistance: 300,
+                lDistance: 20,
+                yOffset: -20
+            });
+
         this._$window = $(window);
 
         if (this.actionsViewType) {
@@ -55,14 +78,6 @@ RB.DatagridPageView = Backbone.View.extend({
         }
 
         this._$window.resize(_.bind(this._updateSize, this));
-
-        if (RB.UserSession.instance.get('authenticated')) {
-            this._starManager = new RB.StarManagerView({
-                model: new RB.StarManager(),
-                el: this._$datagrid,
-                datagridMode: true
-            });
-        }
 
         return this;
     },
@@ -131,6 +146,7 @@ RB.DatagridPageView = Backbone.View.extend({
         this.$('time.timesince').timesince();
         this.$('.user').user_infobox();
         this.$('.bugs').find('a').bug_infobox();
+        this.$('.review-request-link').review_request_infobox();
 
         this.model.clearSelection();
 
@@ -140,6 +156,14 @@ RB.DatagridPageView = Backbone.View.extend({
         }, this);
 
         this._updateSize();
+
+        if (RB.UserSession.instance.get('authenticated')) {
+            this._starManager = new RB.StarManagerView({
+                model: new RB.StarManager(),
+                el: this._$main,
+                datagridMode: true
+            });
+        }
 
         this._$datagrid.on('reloaded', _.bind(this._setupDatagrid, this));
     },

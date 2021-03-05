@@ -1,29 +1,21 @@
 /*
- * Sets the border radius of an element.
+ * These are obsolete now that LESS compilation includes autoprefixer. They're
+ * left here for compatibility when building extensions, but should be
+ * considered deprecated in favor of just using the standard CSS rules.
  */
-.border-radius(...) {
-  -moz-border-radius: @arguments;
-  -webkit-border-radius: @arguments;
-  border-radius: @arguments;
+.border-radius(...) { border-radius: @arguments; }
+.box-shadow(...) { box-shadow: @arguments; }
+.box-sizing(...) { box-sizing: @arguments; }
+.grab-cursor() { cursor: grab; }
+.grabbing-cursor-important() { cursor: grabbing !important; }
+.opacity(@value) { opacity: @value / 100; }
+.pre-wrap() { white-space: pre-wrap; }
+.transform(...) { transform: @arguments; }
+.transition(...) { transition: @arguments; }
+.transition-transform(@duration, @rest...) {
+  transition: @duration transform @rest;
 }
 
-/*
- * Sets the box shadow of an element.
- */
-.box-shadow(...) {
-  -moz-box-shadow: @arguments;
-  -webkit-box-shadow: @arguments;
-  box-shadow: @arguments;
-}
-
-/*
- * Sets the box sizing mode of an element.
- */
-.box-sizing(...) {
-  -moz-box-sizing: @arguments;
-  -webkit-box-sizing: @arguments;
-  box-sizing: @arguments;
-}
 
 /*
  * Ellipsizes the text content in an element on supported browsers.
@@ -32,76 +24,6 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-/*
- * Sets the cursor to the CSS3 "grab" cursor in a cross-browser way.
- */
-.grab-cursor() {
-  cursor: grab;
-  cursor: -moz-grab;
-  cursor: -webkit-grab;
-}
-
-.grabbing-cursor-important() {
-  /*
-   * XXX: We should be able in instantiate mixins with !important but for some
-   * reason it's not working for me.
-   */
-  cursor: grabbing !important;
-  cursor: -moz-grabbing !important;
-  cursor: -webkit-grabbing !important;
-}
-
-/*
- * Sets the opacity of an element in a cross-browser way.
- */
-.opacity(@value) {
-  opacity: @value / 100;
-  filter:alpha(opacity=@value);
-  -moz-opacity: @value / 100;
-}
-
-/*
- * Sets the white-space mode for pre-like formatting, with wrapping.
- */
-.pre-wrap() {
-  white-space: pre-wrap;      /* CSS 3 */
-  white-space: -moz-pre-wrap; /* Mozilla, 1999+ */
-  white-space: -pre-wrap;     /* Opera 4-6 */
-  white-space: -o-pre-wrap;   /* Opera 7 */
-  word-wrap: break-word;      /* IE 5.5+ */
-}
-
-/*
- * Sets the CSS3 transition on an element.
- */
-.transition(...) {
-  -webkit-transition: @arguments;
-  -moz-transition: @arguments;
-  transition: @arguments;
-}
-
-/*
- * Sets the CSS3 transition on an element, handling transitions of
- * transform() across browsers.
- */
-.transition-transform(@duration, @rest...) {
-  -webkit-transition: @duration -webkit-transform @rest;
-  -moz-transition: @duration -moz-transform @rest,
-                   @duration transform @rest;
-  transition: @duration -webkit-transform @rest,
-              @duration -moz-transform @rest,
-              @duration transform @rest;
-}
-
-/*
- * Sets the CSS3 transformation on an element.
- */
-.transform(...) {
-  -webkit-transform: @arguments;
-  -moz-transform: @arguments;
-  transform: @arguments;
 }
 
 /*
@@ -186,4 +108,72 @@
 .scrollable-y(@type: auto) {
   overflow-y: @type;
   -webkit-overflow-scrolling: touch;
+}
+
+/* Make code blocks flush against the sides of the field. */
+.flush-codehilite() {
+  border-left: 0;
+  border-right: 0;
+  border-radius: 0;
+}
+
+/* Keep the label from shifting when the pencil icon is hidden/shown. */
+.inline-editor-label() {
+  display: block;
+  line-height: 16px;
+  vertical-align: top;
+}
+
+/* Adds a left-facing arrow to the left-hand side of a box. */
+.left-arrow-callout(@color) {
+  position: relative;
+
+  &:before, &:after {
+    border: 1px transparent solid;
+    content: " ";
+    display: block;
+    height: 0;
+    left: -20px;
+    position: absolute;
+    right: 100%;
+    top: 12px;
+    width: 0;
+  }
+
+  &:before {
+    border-right-color: @box-border-color;
+    border-width: 10px;
+  }
+
+  &:after {
+    border-right-color: @color;
+    border-width: 9px;
+    margin-left: 2px;
+    margin-top: 1px;
+  }
+}
+
+/* Changes the color of an existing callout arrow. */
+.left-arrow-callout-color(@color) {
+  &:after {
+    border-right-color: @color;
+  }
+}
+
+/* Changes the border color of an existing callout arrow. */
+.left-arrow-callout-border-color(@color) {
+  &:before {
+    border-right-color: @color;
+  }
+}
+
+/* Styles the status label of a review request. */
+.review-request-label(@color, @border-color, @text-color) {
+  background-color: @color;
+  border: 1px @border-color solid;
+  border-radius: 5px;
+  color: @text-color;
+  font-size: 75%;
+  font-weight: normal;
+  padding: 0.1em 0.35em 0.25em 0.35em;
 }

@@ -4,6 +4,7 @@ from django.db import models
 from django.utils.encoding import python_2_unicode_compatible
 from django.utils.translation import ugettext_lazy as _
 from djblets.db.fields import JSONField
+from djblets.util.compat.django.core.validators import URLValidator
 from multiselectfield import MultiSelectField
 
 from reviewboard.notifications.managers import WebHookTargetManager
@@ -129,6 +130,19 @@ class WebHookTarget(models.Model):
 
     objects = WebHookTargetManager()
 
+    def __init__(self, *args, **kwargs):
+        """Initialize the model.
+
+        Args:
+            *args (tuple):
+                Positional arguments to pass through to the Model constructor.
+
+            **kwargs (dict):
+                Keyword arguments to pass through to the Model constructor.
+        """
+        super(WebHookTarget, self).__init__(*args, **kwargs)
+        self._meta.get_field('url').validators = [URLValidator()]
+
     def is_accessible_by(self, user, local_site=None):
         """Return if the webhook can be accessed or modified by the user.
 
@@ -154,8 +168,9 @@ class WebHookTarget(models.Model):
                  local_site.is_mutable_by(user)))
 
     def __str__(self):
-        return 'Webhook for events %s, url %s' % (','.join(self.events),
-                                                  self.url)
+        return self.url
 
     class Meta:
-        verbose_name = _('webhook')
+        db_table = 'notifications_webhooktarget'
+        verbose_name = _('Webhook')
+        verbose_name_plural = _('Webhooks')

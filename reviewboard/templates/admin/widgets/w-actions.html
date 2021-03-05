@@ -8,19 +8,21 @@
 <div class="rb-icon rb-icon-admin-disabled" title="{% trans 'Disabled' %}"></div>
 {% enddefinevar %}
 
-{% if show_sidebar %}
 <div class="admin-widget admin-sidebar" id="widget-sys-settings">
  <h1 class="widget-heading">{% trans "System Settings" %}</h1>
  <div class="widget-content">
   <ul>
 {% admin_subnav "settings-general" _("General") %}
 {% admin_subnav "settings-authentication" _("Authentication") %}
+{% admin_subnav "settings-avatars" _("Avatar Services") %}
 {% admin_subnav "settings-email" _("E-Mail") %}
 {% admin_subnav "settings-diffs" _("Diff Viewer") %}
 {% admin_subnav "settings-logging" _("Logging") %}
 {% admin_subnav "settings-ssh" _("SSH")  %}
 {% admin_subnav "settings-storage" _("File Storage") %}
+{% admin_subnav "settings-privacy" _("User Privacy") %}
 {% admin_subnav "settings-support" _("Support") %}
+{% admin_subnav "settings-search" _("Search") %}
   </ul>
  </div>
 </div>
@@ -60,6 +62,11 @@
      <td class="count">{{count_hosting_accounts}}</td>
      <td class="td-right"><a class="addlink" href="{{SITE_ROOT}}admin/db/hostingsvcs/hostingserviceaccount/add/">{% trans "Add" %} <div class="rb-icon rb-icon-admin-add"></div></a></td>
     </tr>
+    <tr>
+     <th scope="row"><a href="{{SITE_ROOT}}admin/db/oauth/application/">{% trans "OAuth2 Applications" %}</a></th>
+     <td class="count">{{count_oauth_applications}}</td>
+     <td class="td-right"><a class="addlink" href="{{SITE_ROOT}}admin/db/oauth/application/add/">{% trans "Add" %} <div class="rb-icon rb-icon-admin-add"></div></a></td>
+    </tr>
    </tbody>
   </table>
  </div>
@@ -77,10 +84,10 @@
 {% endif %}
    </a></li>
    <li><a href="{% url 'settings-authentication' %}">{% trans "Public Read-only Access" %}
-{% if siteconfig_settings.auth_anonymous_access %}
-    {{enabled_img}}
-{% else %}
+{% if siteconfig_settings.auth_require_sitewide_login %}
     {{disabled_img}}
+{% else %}
+    {{enabled_img}}
 {% endif %}
    </a></li>
    <li><a href="{% url 'settings-diffs' %}">{% trans "Syntax Highlighting" %}
@@ -118,7 +125,7 @@
     {{disabled_img}}
 {% endif %}
    </a></li>
-   <li><a href="{% url 'settings-general' %}">{% trans "Indexed Search" %}
+   <li><a href="{% url 'settings-search' %}">{% trans "Indexed Search" %}
 {% if siteconfig_settings.search_enable %}
     {{enabled_img}}
 {% else %}
@@ -129,4 +136,3 @@
   </ul>
  </div>
 </div>
-{% endif %}

@@ -19,6 +19,7 @@ from reviewboard.datagrids.columns import (BugsColumn,
                                            DiffSizeColumn,
                                            DiffUpdatedColumn,
                                            DiffUpdatedSinceColumn,
+                                           FullNameColumn,
                                            GroupMemberCountColumn,
                                            GroupsColumn,
                                            MyCommentsColumn,
@@ -31,12 +32,11 @@ from reviewboard.datagrids.columns import (BugsColumn,
                                            ReviewRequestCheckboxColumn,
                                            ReviewRequestIDColumn,
                                            ReviewRequestStarColumn,
-                                           ReviewSubmitterColumn,
                                            ReviewSummaryColumn,
                                            ShipItColumn,
-                                           SubmitterColumn,
                                            SummaryColumn,
-                                           ToMeColumn)
+                                           ToMeColumn,
+                                           UsernameColumn)
 from reviewboard.datagrids.sidebar import Sidebar, DataGridSidebarMixin
 from reviewboard.datagrids.builtin_items import (IncomingSection,
                                                  OutgoingSection,
@@ -57,8 +57,7 @@ class ShowClosedReviewRequestsMixin(object):
         try:
             self.show_closed = (
                 int(self.request.GET.get('show-closed',
-                                         self.show_closed))
-                != 0)
+                                         self.show_closed)) != 0)
         except ValueError:
             # do nothing
             pass
@@ -128,11 +127,13 @@ class ReviewRequestDataGrid(ShowClosedReviewRequestsMixin, DataGrid):
     submitted review requests to be filtered out or displayed.
     """
 
+    new_updates = NewUpdatesColumn()
     my_comments = MyCommentsColumn()
     star = ReviewRequestStarColumn()
     ship_it = ShipItColumn()
     summary = SummaryColumn()
-    submitter = SubmitterColumn()
+    submitter = UsernameColumn(label=_('Owner'),
+                               user_relation=['submitter'])
 
     branch = Column(
         label=_('Branch'),
@@ -203,10 +204,11 @@ class ReviewRequestDataGrid(ShowClosedReviewRequestsMixin, DataGrid):
             'star', 'summary', 'submitter', 'time_added', 'last_updated_since'
         ]
 
-        # Add local timezone info to the columns
+        # Add local timezone info to the columns.
         user = self.request.user
+
         if user.is_authenticated():
-            profile, is_new = Profile.objects.get_or_create(user=user)
+            profile = user.get_profile()
             self.timezone = pytz.timezone(profile.timezone)
             self.time_added.timezone = self.timezone
             self.last_updated.timezone = self.timezone
@@ -242,7 +244,8 @@ class ReviewDataGrid(ShowClosedReviewRequestsMixin, DataGrid):
         label=_('Date Reviewed'),
         format='F jS, Y',
         shrink=True)
-    submitter = ReviewSubmitterColumn()
+    submitter = UsernameColumn(label=_('Owner'),
+                               user_relation=['review_request', 'submitter'])
     review_summary = ReviewSummaryColumn()
 
     status_query_field = 'review_request__status'
@@ -262,10 +265,11 @@ class ReviewDataGrid(ShowClosedReviewRequestsMixin, DataGrid):
            'submitter', 'review_summary', 'timestamp',
         ]
 
-        # Add local timezone info to the columns
+        # Add local timezone info to the columns.
         user = self.request.user
+
         if user.is_authenticated():
-            profile, is_new = Profile.objects.get_or_create(user=user)
+            profile = user.get_profile()
             self.timezone = pytz.timezone(profile.timezone)
             self.timestamp.timezone = self.timezone
 
@@ -316,11 +320,8 @@ class DashboardDataGrid(DataGridSidebarMixin, ReviewRequestDataGrid):
 
         self.local_site = local_site
         self.user = self.request.user
-        self.profile = Profile.objects.get_or_create(user=self.user)[0]
-        self.site_profile = LocalSiteProfile.objects.get_or_create(
-            user=self.user,
-            local_site=local_site,
-            profile=self.profile)[0]
+        self.profile = self.user.get_profile()
+        self.site_profile = self.user.get_site_profile(local_site)
 
     def load_extra_state(self, profile):
         """Load extra state for the datagrid."""
@@ -407,15 +408,14 @@ class DashboardDataGrid(DataGridSidebarMixin, ReviewRequestDataGrid):
 class UsersDataGrid(AlphanumericDataGrid):
     """A datagrid showing a list of users registered on Review Board."""
 
-    username = Column(_('Username'), link=True, sortable=True)
-    fullname = Column(_('Full Name'), field_name='get_full_name',
-                      link=True, expand=True)
+    username = UsernameColumn(label=_('Username'))
+    fullname = FullNameColumn(label=_('Full Name'), link=True, expand=True)
     pending_count = PendingCountColumn(_('Open Review Requests'),
                                        field_name='directed_review_requests',
                                        shrink=True)
 
     def __init__(self, request,
-                 queryset=User.objects.filter(is_active=True),
+                 queryset=User.objects.all(),
                  title=_('All users'),
                  local_site=None):
         """Initialize the datagrid."""
@@ -428,17 +428,45 @@ class UsersDataGrid(AlphanumericDataGrid):
                                             sortable_column='username',
                                             extra_regex='^[0-9_\-\.].*')
 
+        self.listview_template = 'datagrids/user_listview.html'
         self.default_sort = ['username']
         self.profile_sort_field = 'sort_submitter_columns'
         self.profile_columns_field = 'submitter_columns'
         self.default_columns = [
             'username', 'fullname', 'pending_count'
         ]
+        self.show_inactive = False
 
     def link_to_object(self, state, obj, value):
         """Return a link to the given object."""
         return local_site_reverse('user', request=self.request,
                                   args=[obj.username])
+
+    def load_extra_state(self, profile):
+        """Load extra state for the datagrid.
+
+        This handles hiding or showing inactive users.
+
+        Args:
+            profile (reviewboard.accounts.models.Profile):
+                The user profile which contains some basic
+                configurable settings.
+
+        Returns:
+            bool:
+            Always returns False.
+        """
+        show_inactive = self.request.GET.get('show-inactive', 0)
+
+        try:
+            self.show_inactive = int(show_inactive)
+        except ValueError:
+            pass
+
+        if not self.show_inactive:
+            self.queryset = self.queryset.filter(is_active=True)
+
+        return False
 
 
 class GroupDataGrid(DataGrid):
@@ -514,6 +542,9 @@ class UserPageReviewRequestDataGrid(UserPageDataGridMixin,
             request,
             queryset=queryset,
             title=_("%s's Review Requests") % user.username,
+            extra_context={
+                'pii_safe_title': _("User's Review Requests"),
+            },
             *args, **kwargs)
 
         self.groups = user.review_groups.accessible(request.user)
@@ -542,6 +573,9 @@ class UserPageReviewsDataGrid(UserPageDataGridMixin, ReviewDataGrid):
             request,
             queryset=queryset,
             title=_("%s's Reviews") % user.username,
+            extra_context={
+                'pii_safe_title': _("User's Reviews"),
+            },
             *args, **kwargs)
 
         self.groups = user.review_groups.accessible(request.user)

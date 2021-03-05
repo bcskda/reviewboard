@@ -1,6 +1,5 @@
 <!DOCTYPE html>
-{% load compressed djblets_deco djblets_extensions djblets_utils gravatars %}
-{% load i18n staticfiles %}
+{% load avatars djblets_deco djblets_extensions djblets_utils features i18n pipeline staticfiles %}
 
 <html>
  <head>
@@ -15,13 +14,14 @@
         MANUAL_URL = '{{RB_MANUAL_URL}}',
         STATIC_URLS = {
             'rb/images/favicon_notify.ico': '{% static "rb/images/favicon_notify.ico" %}',
-            'rb/images/resize-grip.png': '{% static "rb/images/resize-grip.png" %}'
+            'rb/images/resize-grip.png': '{% static "rb/images/resize-grip.png" %}',
+            'rb/images/logo.png': '{% static "rb/images/logo.png" %}'
         };
 {% block jsconsts %}{% endblock %}
   </script>
   <link rel="shortcut icon" type="image/x-icon" href="{% static "rb/images/favicon.ico" %}" />
   <link rel="apple-touch-icon-precomposed" type="image/png" href="{% static "rb/images/apple-home-icon.png" %}" />
-{% compressed_css "common" %}
+{% stylesheet 'common' %}
 {% block css %}{% endblock %}
 {% load_extensions_css "reviewboard.extensions" %}
 {% template_hook_point "base-css" %}
@@ -44,7 +44,6 @@
   <![endif]-->
 {% include "js/jquery.html" %}
 {% block scripts %}{% endblock %}
-{% include "js/pipeline.html" %}
 {% template_hook_point "base-scripts" %}
  </head>
 {% block bodytag %}
@@ -103,20 +102,32 @@
   </div>
   <script src="{% url 'js-catalog' %}"></script>
   {% include "js/jquery-ui.html" %}
-  {% compressed_js "3rdparty" %}
-  {% compressed_js "djblets-gravy" %}
-  {% compressed_js "djblets-extensions" %}
-  {% compressed_js "common" %}
+  {% javascript '3rdparty' %}
+  {% javascript 'djblets-gravy' %}
+  {% javascript 'djblets-utils' %}
+  {% javascript 'djblets-extensions' %}
+  {% javascript 'common' %}
   <script>
     RB.UserSession.create({
 {% if request.user.is_authenticated %}
         authenticated: true,
 {%  if user_profile %}
         commentsOpenAnIssue: {{user_profile.open_an_issue|yesno:"true,false"}},
-{%  endif %}
+        enableDesktopNotifications: {{user_profile.should_enable_desktop_notifications|yesno:"true,false"}},
         defaultUseRichText: {{user_profile.should_use_rich_text|yesno:"true,false"}},
+{%  endif %}
         fullName: "{{request.user|user_displayname|escapejs}}",
-        gravatarURL: "{% filter escapejs %}{% gravatar_url request.user.email %}{% endfilter %}",
+{% if siteconfig_settings.avatars_enabled %}
+        avatarHTML: {
+            32: "{% filter escapejs %}{% avatar request.user 32 %}{% endfilter %}"
+        },
+        avatarURLs: {
+            32: {% avatar_urls request.user 32 %}
+        },
+{% else %}
+        avatarHTML: {},
+        avatarURLs: {},
+{% endif %}
         username: "{{request.user.username|escapejs}}",
         userPageURL: "{% url 'user' request.user %}",
         sessionURL: "{% url 'session-resource' %}",
@@ -124,12 +135,18 @@
         watchedReviewGroupsURL: "{% url 'watched-review-groups-resource' request.user %}",
         watchedReviewRequestsURL: "{% url 'watched-review-requests-resource' request.user %}",
         archivedReviewRequestsURL: "{% url 'archived-review-requests-resource' request.user %}",
-        mutedReviewRequestsURL: "{% url 'muted-review-requests-resource' request.user %}"
+        mutedReviewRequestsURL: "{% url 'muted-review-requests-resource' request.user %}",
+        userFileAttachmentsURL: "{% url 'user-file-attachments-resource' request.user %}"
 {% else %}
         authenticated: false,
         loginURL: "{% url 'login' %}"
 {% endif %}
     });
+
+    RB.EnabledFeatures = {
+        issueVerification: {% if_feature_enabled 'reviews.issue_verification' %}true{% else %}false{% endif_feature_enabled %},
+        generalComments: {% if_feature_enabled 'reviews.general_comments' %}true{% else %}false{% endif_feature_enabled %}
+    };
 
     new RB.HeaderView({ el: $('#headerbar') });
   </script>

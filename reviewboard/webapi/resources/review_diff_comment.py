@@ -68,6 +68,9 @@ class ReviewDiffCommentResource(BaseDiffCommentResource):
 
         This will create a new diff comment on this review. The review
         must be a draft review.
+
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         try:
             review_request = \
@@ -109,17 +112,13 @@ class ReviewDiffCommentResource(BaseDiffCommentResource):
                 'fields': invalid_fields,
             }
 
-        new_comment = self.create_comment(
+        return self.create_comment(
             review=review,
+            comments_m2m=review.comments,
             filediff=filediff,
             interfilediff=interfilediff,
             fields=('filediff', 'interfilediff', 'first_line', 'num_lines'),
             **kwargs)
-        review.comments.add(new_comment)
-
-        return 201, {
-            self.item_result_key: new_comment,
-        }
 
     @webapi_check_local_site
     @webapi_login_required
@@ -141,6 +140,9 @@ class ReviewDiffCommentResource(BaseDiffCommentResource):
         """Updates a diff comment.
 
         This can update the text or line range of an existing comment.
+
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         try:
             resources.review_request.get_object(request, *args, **kwargs)
@@ -149,19 +151,11 @@ class ReviewDiffCommentResource(BaseDiffCommentResource):
         except ObjectDoesNotExist:
             return DOES_NOT_EXIST
 
-        # Determine whether or not we're updating the issue status.
-        if self.should_update_issue_status(diff_comment, **kwargs):
-            return self.update_issue_status(request, self, *args, **kwargs)
-
-        if not resources.review.has_modify_permissions(request, review):
-            return self.get_no_access_error(request)
-
-        self.update_comment(diff_comment, ('first_line', 'num_lines'),
-                            **kwargs)
-
-        return 200, {
-            self.item_result_key: diff_comment,
-        }
+        return self.update_comment(request=request,
+                                   review=review,
+                                   comment=diff_comment,
+                                   update_fields=('first_line', 'num_lines'),
+                                   **kwargs)
 
     @webapi_check_local_site
     @augment_method_from(BaseDiffCommentResource)

@@ -16,6 +16,7 @@ class TestServiceForm(HostingServiceForm):
 
 
 class TestService(HostingService):
+    hosting_service_id = 'test'
     name = 'Test Service'
     form = TestServiceForm
     needs_authorization = True
@@ -23,11 +24,18 @@ class TestService(HostingService):
     supports_bug_trackers = True
     supports_two_factor_auth = True
     has_repository_hook_instructions = True
-    supported_scmtools = ['Git']
+    supported_scmtools = ['Git', 'Test', 'perforce']
+    visible_scmtools = ['git', 'test']
     bug_tracker_field = ('http://example.com/%(hosting_account_username)s/'
                          '%(test_repo_name)s/issue/%%s')
     repository_fields = {
         'Git': {
+            'path': 'http://example.com/%(test_repo_name)s/',
+        },
+        'Perforce': {
+            'path': '%(test_repo_name).p4.example.com:1666',
+        },
+        'Test': {
             'path': 'http://example.com/%(test_repo_name)s/',
         },
     }
@@ -55,11 +63,16 @@ class TestService(HostingService):
 
 
 class SelfHostedTestService(TestService):
+    hosting_service_id = 'self_hosted_test'
     name = 'Self-Hosted Test'
     self_hosted = True
     bug_tracker_field = '%(hosting_url)s/%(test_repo_name)s/issue/%%s'
     repository_fields = {
         'Git': {
+            'path': '%(hosting_url)s/%(test_repo_name)s/',
+            'mirror_path': 'git@%(hosting_domain)s:%(test_repo_name)s/',
+        },
+        'Test': {
             'path': '%(hosting_url)s/%(test_repo_name)s/',
             'mirror_path': 'git@%(hosting_domain)s:%(test_repo_name)s/',
         },

@@ -3,6 +3,7 @@ from __future__ import unicode_literals
 from django.utils import six
 from djblets.testing.decorators import add_fixtures
 from djblets.webapi.errors import INVALID_FORM_DATA
+from djblets.webapi.testing.decorators import webapi_test_template
 
 from reviewboard.notifications.models import WebHookTarget
 from reviewboard.site.models import LocalSite
@@ -43,7 +44,7 @@ class ResourceListTests(ExtraDataListMixin, BaseWebAPITestCase):
 
     resource = resources.webhook
 
-    sample_api_url = 'api/webhooks/'
+    sample_api_url = 'webhooks/'
 
     basic_get_use_admin = True
     basic_post_use_admin = True
@@ -82,18 +83,25 @@ class ResourceListTests(ExtraDataListMixin, BaseWebAPITestCase):
         return (get_webhook_list_url(local_site_name),
                 webhook_item_mimetype,
                 post_data,
-                [])
+                [local_site_name])
 
-    def check_post_result(self, user, rsp):
+    def check_post_result(self, user, rsp, local_site_name=None):
         self.assertIn('webhook', rsp)
         item_rsp = rsp['webhook']
 
-        self.compare_item(item_rsp,
-                          WebHookTarget.objects.get(pk=item_rsp['id']))
+        webhook = WebHookTarget.objects.get(pk=item_rsp['id'])
+
+        if local_site_name is None:
+            self.assertIsNone(webhook.local_site)
+        else:
+            self.assertEqual(webhook.local_site.name, local_site_name)
+
+        self.compare_item(item_rsp, webhook)
 
     @add_fixtures(['test_scmtools'])
+    @webapi_test_template
     def test_post_with_repositories(self):
-        """Testing adding a webhook for custom repositories"""
+        """Testing the POST <url> API with custom repositories"""
         repositories = [
             self.create_repository(name='Repo 1'),
             self.create_repository(name='Repo 2'),
@@ -122,9 +130,10 @@ class ResourceListTests(ExtraDataListMixin, BaseWebAPITestCase):
         self.check_post_result(self.user, rsp)
 
     @add_fixtures(['test_scmtools'])
+    @webapi_test_template
     def test_post_all_repositories_not_same_local_site(self):
-        """Testing adding a webhook with a local site adnd custom repositories
-        that are not all in the same local site
+        """Testing the POST <URL> API with a local site and custom
+        repositories that are not all in the same local site
         """
         local_site_1 = LocalSite.objects.create(name='local-site-1')
         local_site_2 = LocalSite.objects.create(name='local-site-2')
@@ -162,16 +171,14 @@ class ResourceListTests(ExtraDataListMixin, BaseWebAPITestCase):
         self.assertEqual(rsp['err']['msg'], INVALID_FORM_DATA.msg)
         self.assertTrue('fields' in rsp)
         self.assertTrue('repositories' in rsp['fields'])
-        self.assertEqual(set(rsp['fields']['repositories']),
-                         set([
-                             'Repository with ID %s is invalid.' % repo.pk
-                             for repo in repositories[1:]
-                         ]))
+        self.assertEqual(rsp['fields']['repositories'],
+                         ['A repository with ID 3 was not found.'])
 
     @add_fixtures(['test_scmtools'])
+    @webapi_test_template
     def test_post_repositories_local_site_but_webhook_not(self):
-        """Testing adding a webhook without a local site for repositories that
-        are in a local site
+        """Testing the POST <URL> API without a local site for repositories
+        that are in a local site
         """
         local_site = LocalSite.objects.create(name='local-site-1')
 
@@ -205,15 +212,74 @@ class ResourceListTests(ExtraDataListMixin, BaseWebAPITestCase):
         self.assertEqual(rsp['err']['msg'], INVALID_FORM_DATA.msg)
         self.assertTrue('fields' in rsp)
         self.assertTrue('repositories' in rsp['fields'])
-        self.assertEqual(set(rsp['fields']['repositories']),
-                         set([
-                             'Repository with ID %s is invalid.' % repo.pk
-                             for repo in repositories
-                         ]))
+        self.assertEqual(rsp['fields']['repositories'],
+                         ['A repository with ID 1 was not found.'])
+
+    @webapi_test_template
+    def test_post_with_global_site_and_set_local_site(self):
+        """Testing the POST <URL> API and attempting to set a LocalSite for a
+        non-LocalSite WebHook is ignored
+        """
+        local_site = LocalSite.objects.create(name='local-site-1')
+
+        self.user.is_superuser = True
+        self.user.save()
+
+        rsp = self.api_post(
+            get_webhook_list_url(),
+            {
+                'enabled': 0,
+                'events': '*',
+                'url': 'http://example.com',
+                'encoding': 'application/json',
+                'custom_content': '',
+                'apply_to': 'all',
+                'local_site': local_site.pk,
+            },
+            expected_mimetype=webhook_item_mimetype)
+
+        self.assertEqual(rsp['stat'], 'ok')
+
+        webhook = WebHookTarget.objects.get(pk=rsp['webhook']['id'])
+        self.assertIsNone(webhook.local_site)
+        self.compare_item(rsp['webhook'], webhook)
+
+    @webapi_test_template
+    def test_post_with_local_site_and_set_local_site(self):
+        """Testing the POST <URL> API and attempting to set a LocalSite for
+        another LocalSite's WebHook is ignored
+        """
+        local_site_1 = LocalSite.objects.create(name='local-site-1')
+        local_site_1.users.add(self.user)
+
+        local_site_2 = LocalSite.objects.create(name='local-site-2')
+
+        self.user.is_superuser = True
+        self.user.save()
+
+        rsp = self.api_post(
+            get_webhook_list_url(local_site_name='local-site-1'),
+            {
+                'enabled': 0,
+                'events': '*',
+                'url': 'http://example.com',
+                'encoding': 'application/json',
+                'custom_content': '',
+                'apply_to': 'all',
+                'local_site': local_site_2.pk,
+            },
+            expected_mimetype=webhook_item_mimetype)
+
+        self.assertEqual(rsp['stat'], 'ok')
+
+        webhook = WebHookTarget.objects.get(pk=rsp['webhook']['id'])
+        self.assertEqual(webhook.local_site_id, local_site_1.pk)
+        self.compare_item(rsp['webhook'], webhook)
 
     @add_fixtures(['test_scmtools'])
+    @webapi_test_template
     def test_post_multiple_events(self):
-        """Testing adding a webhook that listens for multiple events"""
+        """Testing the POST <URL> API with multiple events"""
         self.user.is_superuser = True
         self.user.save()
 
@@ -235,8 +301,9 @@ class ResourceListTests(ExtraDataListMixin, BaseWebAPITestCase):
         self.compare_item(rsp['webhook'], WebHookTarget.objects.get())
 
     @add_fixtures(['test_scmtools'])
+    @webapi_test_template
     def test_post_no_events(self):
-        """Testing adding a webhook that listens on no events"""
+        """Testing the POST <URL> API with no events"""
         self.user.is_superuser = True
         self.user.save()
 
@@ -258,9 +325,10 @@ class ResourceListTests(ExtraDataListMixin, BaseWebAPITestCase):
         self.compare_item(rsp['webhook'], WebHookTarget.objects.get())
 
     @add_fixtures(['test_scmtools'])
+    @webapi_test_template
     def test_post_all_events_and_more(self):
-        """Testing adding a webhook that listens on all events (*) and
-        additional events
+        """Testing the POST <URL> API with all events (*) and additional
+        events
         """
         self.user.is_superuser = True
         self.user.save()
@@ -287,8 +355,9 @@ class ResourceListTests(ExtraDataListMixin, BaseWebAPITestCase):
         self.assertListEqual(webhook.events, ['*'])
 
     @add_fixtures(['test_scmtools'])
+    @webapi_test_template
     def test_post_empty_repositories(self):
-        """Testing adding a webhook that has an empty repositories field"""
+        """Testing the POST <URL> API with an empty repositories field"""
         self.user.is_superuser = True
         self.user.save()
 
@@ -310,13 +379,14 @@ class ResourceListTests(ExtraDataListMixin, BaseWebAPITestCase):
         self.assertIn('webhook', rsp)
         self.compare_item(rsp['webhook'], WebHookTarget.objects.get())
 
+
 @six.add_metaclass(BasicTestsMetaclass)
 class ResourceItemTests(ExtraDataItemMixin, BaseWebAPITestCase):
     """Tests for the WebHookResource item resource."""
 
     resource = resources.webhook
 
-    sample_api_url = 'api/webhooks/<id>/'
+    sample_api_url = 'webhooks/<id>/'
 
     basic_get_use_admin = True
     basic_delete_use_admin = True
@@ -335,18 +405,23 @@ class ResourceItemTests(ExtraDataItemMixin, BaseWebAPITestCase):
 
     def setup_basic_put_test(self, user, with_local_site, local_site_name,
                              put_valid_data):
-
         webhook = self.create_webhook(with_local_site=with_local_site)
 
         return (get_webhook_item_url(webhook.pk, local_site_name),
                 webhook_item_mimetype,
                 {},
                 webhook,
-                [])
+                [local_site_name])
 
-    def check_put_result(self, user, item_rsp, item):
-        self.compare_item(item_rsp,
-                          WebHookTarget.objects.get(pk=item_rsp['id']))
+    def check_put_result(self, user, item_rsp, item, local_site_name=None):
+        webhook = WebHookTarget.objects.get(pk=item_rsp['id'])
+
+        if local_site_name is None:
+            self.assertIsNone(webhook.local_site)
+        else:
+            self.assertEqual(webhook.local_site.name, local_site_name)
+
+        self.compare_item(item_rsp, webhook)
 
     def setup_basic_delete_test(self, user, with_local_site, local_site_name):
         webhook = self.create_webhook(with_local_site=with_local_site)
@@ -357,3 +432,56 @@ class ResourceItemTests(ExtraDataItemMixin, BaseWebAPITestCase):
     def check_delete_result(self, user, webhook):
         self.assertRaises(WebHookTarget.DoesNotExist,
                           lambda: WebHookTarget.objects.get(pk=webhook.pk))
+
+    @webapi_test_template
+    def test_put_with_global_site_and_set_local_site(self):
+        """Testing the PUT <URL> API and attempting to set a LocalSite for a
+        non-LocalSite WebHook is ignored
+        """
+        local_site = LocalSite.objects.create(name='local-site-1')
+
+        self.user.is_superuser = True
+        self.user.save()
+
+        webhook = self.create_webhook()
+
+        rsp = self.api_put(
+            get_webhook_item_url(webhook.pk),
+            {
+                'local_site': local_site.pk,
+            },
+            expected_mimetype=webhook_item_mimetype)
+
+        self.assertEqual(rsp['stat'], 'ok')
+
+        webhook = WebHookTarget.objects.get(pk=rsp['webhook']['id'])
+        self.assertIsNone(webhook.local_site)
+        self.compare_item(rsp['webhook'], webhook)
+
+    @webapi_test_template
+    def test_put_with_local_site_and_set_local_site(self):
+        """Testing the PUT <URL> API and attempting to set a LocalSite for a
+        another LocalSite's WebHook is ignored
+        """
+        local_site_1 = LocalSite.objects.create(name='local-site-1')
+        local_site_1.users.add(self.user)
+
+        local_site_2 = LocalSite.objects.create(name='local-site-2')
+
+        self.user.is_superuser = True
+        self.user.save()
+
+        webhook = self.create_webhook(local_site=local_site_1)
+
+        rsp = self.api_put(
+            get_webhook_item_url(webhook.pk, local_site_1.name),
+            {
+                'local_site': local_site_2.pk,
+            },
+            expected_mimetype=webhook_item_mimetype)
+
+        self.assertEqual(rsp['stat'], 'ok')
+
+        webhook = WebHookTarget.objects.get(pk=rsp['webhook']['id'])
+        self.assertEqual(webhook.local_site_id, local_site_1.pk)
+        self.compare_item(rsp['webhook'], webhook)

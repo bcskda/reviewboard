@@ -10,16 +10,22 @@ from django.core.exceptions import (PermissionDenied,
                                     ValidationError)
 from django.db.models import Q
 from django.utils import six
+from django.utils.timezone import get_current_timezone, is_aware, make_aware
 from djblets.util.decorators import augment_method_from
 from djblets.webapi.decorators import (webapi_login_required,
                                        webapi_response_errors,
                                        webapi_request_fields)
-from djblets.webapi.errors import (DOES_NOT_EXIST, NOT_LOGGED_IN,
+from djblets.webapi.errors import (DOES_NOT_EXIST,
+                                   INVALID_FORM_DATA,
+                                   NOT_LOGGED_IN,
                                    PERMISSION_DENIED)
+from pytz.exceptions import AmbiguousTimeError
 
+from reviewboard.admin.server import build_server_url
 from reviewboard.diffviewer.errors import (DiffTooBigError,
                                            DiffParserError,
                                            EmptyDiffError)
+from reviewboard.hostingsvcs.errors import HostingServiceError
 from reviewboard.reviews.errors import (CloseError,
                                         PermissionError,
                                         PublishError,
@@ -32,11 +38,12 @@ from reviewboard.scmtools.errors import (AuthenticationError,
                                          InvalidChangeNumberError,
                                          SCMError,
                                          RepositoryNotFoundError)
+from reviewboard.site.urlresolvers import local_site_reverse
 from reviewboard.ssh.errors import SSHError
 from reviewboard.scmtools.models import Repository
-from reviewboard.webapi.base import WebAPIResource
-from reviewboard.webapi.decorators import webapi_check_local_site
-from reviewboard.webapi.encoder import status_to_string, string_to_status
+from reviewboard.webapi.base import ImportExtraDataError, WebAPIResource
+from reviewboard.webapi.decorators import (webapi_check_local_site,
+                                           webapi_check_login_required)
 from reviewboard.webapi.errors import (CHANGE_NUMBER_IN_USE,
                                        CLOSE_ERROR,
                                        COMMIT_ID_ALREADY_EXISTS,
@@ -118,7 +125,7 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         'close_description_text_type': {
             'type': MarkdownFieldsMixin.TEXT_TYPES,
             'description': 'The current or forced text type for the '
-                           'close_description field.',
+                           '``close_description`` field.',
             'added_in': '2.0.12',
         },
         'depends_on': {
@@ -151,6 +158,12 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
                            'review request',
             'added_in': '2.0',
         },
+        'issue_verifying_count': {
+            'type': int,
+            'description': 'The number of issues waiting for verification to '
+                           'resolve or drop on this review request',
+            'added_in': '3.0.3',
+        },
         'submitter': {
             'type': UserResource,
             'description': 'The user who submitted the review request.',
@@ -158,20 +171,20 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         'time_added': {
             'type': six.text_type,
             'description': 'The date and time that the review request was '
-                           'added (in YYYY-MM-DD HH:MM:SS format).',
+                           'added (in ``YYYY-MM-DD HH:MM:SS`` format).',
         },
         'last_updated': {
             'type': six.text_type,
             'description': 'The date and time that the review request was '
-                           'last updated (in YYYY-MM-DD HH:MM:SS format).',
+                           'last updated (in ``YYYY-MM-DD HH:MM:SS`` format).',
         },
         'text_type': {
             'type': MarkdownFieldsMixin.TEXT_TYPES,
             'description': 'Formerly responsible for indicating the text '
                            'type for text fields. Replaced by '
-                           'close_description_text_type, '
-                           'description_text_type, and '
-                           'testing_done_text_type in 2.0.12.',
+                           '``close_description_text_type``, '
+                           '``description_text_type``, and '
+                           '``testing_done_text_type`` in 2.0.12.',
             'added_in': '2.0',
             'deprecated_in': '2.0.12',
         },
@@ -225,7 +238,7 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         'description_text_type': {
             'type': MarkdownFieldsMixin.TEXT_TYPES,
             'description': 'The current or forced text type for the '
-                           'description field.',
+                           '``description`` field.',
             'added_in': '2.0.12',
         },
         'testing_done': {
@@ -237,7 +250,7 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         'testing_done_text_type': {
             'type': MarkdownFieldsMixin.TEXT_TYPES,
             'description': 'The current or forced text type for the '
-                           'testing_done field.',
+                           '``testing_done`` field.',
             'added_in': '2.0.12',
         },
         'bugs_closed': {
@@ -282,11 +295,12 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         resources.change,
         resources.diff,
         resources.diff_context,
+        resources.file_attachment,
+        resources.review,
         resources.review_request_draft,
         resources.review_request_last_update,
-        resources.review,
         resources.screenshot,
-        resources.file_attachment,
+        resources.status_update,
     ]
 
     allowed_methods = ('GET', 'POST', 'PUT', 'DELETE')
@@ -295,6 +309,53 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         'submitted': ReviewRequest.SUBMITTED,
         'discarded': ReviewRequest.DISCARDED,
     }
+
+    def get_related_links(self, obj=None, request=None, *args,
+                          **kwargs):
+        """Return related links for the resource.
+
+        This will serialize the ``latest_diff`` link when called for the
+        item resource with a resource that has associated diffs.
+
+        Args:
+            obj (reviewboard.reviews.models.review_request.ReviewRequest, optional):
+                The review request.
+
+            request (django.http.HttpRequest, optional):
+                The current HTTP request.
+
+            *args (tuple):
+                Additional positional arguments.
+
+            **kwargs (dict):
+                Additional keyword arguments.
+
+        Returns:
+            dict:
+            A dictionary of links related to the resource.
+        """
+        links = super(ReviewRequestResource, self).get_related_links(
+            obj=obj, request=request, *args, **kwargs)
+
+        if obj:
+            # We already have the diffsets due to get_queryset(), so we aren't
+            # performing another query here.
+            diffsets = list(obj.diffset_history.diffsets.all())
+
+            if diffsets:
+                latest_diffset = diffsets[-1]
+                links['latest_diff'] = {
+                    'href': build_server_url(local_site_reverse(
+                        'diff-resource',
+                        request,
+                        kwargs={
+                            'review_request_id': obj.display_id,
+                            'diff_revision': latest_diffset.revision,
+                        })),
+                    'method': 'GET',
+                }
+
+        return links
 
     def get_queryset(self, request, is_list=False, local_site_name=None,
                      *args, **kwargs):
@@ -369,6 +430,9 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
             if commit_q:
                 q = q & commit_q
 
+            if 'branch' in kwargs:
+                q &= Q(branch=kwargs['branch'])
+
             if 'ship-it' in request.GET:
                 ship_it = request.GET.get('ship-it')
 
@@ -380,50 +444,76 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
             q = q & self.build_queries_for_int_field(
                 request, 'shipit_count', 'ship-it-count')
 
-            for issue_field in ('issue_open_count', 'issue_dropped_count',
-                                'issue_resolved_count'):
+            for issue_field in ('issue_open_count',
+                                'issue_dropped_count',
+                                'issue_resolved_count',
+                                'issue_verifying_count'):
                 q = q & self.build_queries_for_int_field(
                     request, issue_field)
 
-            if 'time-added-from' in request.GET:
-                date = self._parse_date(request.GET['time-added-from'])
+            if 'time-added-from' in kwargs:
+                q = q & Q(time_added__gte=kwargs['time-added-from'])
 
-                if date:
-                    q = q & Q(time_added__gte=date)
+            if 'time-added-to' in kwargs:
+                q = q & Q(time_added__lt=kwargs['time-added-to'])
 
-            if 'time-added-to' in request.GET:
-                date = self._parse_date(request.GET['time-added-to'])
+            if 'last-updated-from' in kwargs:
+                q = q & Q(last_updated__gte=kwargs['last-updated-from'])
 
-                if date:
-                    q = q & Q(time_added__lt=date)
+            if 'last-updated-to' in kwargs:
+                q = q & Q(last_updated__lt=kwargs['last-updated-to'])
 
-            if 'last-updated-from' in request.GET:
-                date = self._parse_date(request.GET['last-updated-from'])
+            status = ReviewRequest.string_to_status(
+                request.GET.get('status', 'pending'))
 
-                if date:
-                    q = q & Q(last_updated__gte=date)
+            can_submit_as = request.user.has_perm(
+                'reviews.can_submit_as_another_user', local_site)
 
-            if 'last-updated-to' in request.GET:
-                date = self._parse_date(request.GET['last-updated-to'])
+            request_unpublished = request.GET.get('show-all-unpublished', '0')
+            if request_unpublished in ('0', 'false', 'False'):
+                request_unpublished = False
+            else:
+                request_unpublished = True
 
-                if date:
-                    q = q & Q(last_updated__lt=date)
-
-            status = string_to_status(request.GET.get('status', 'pending'))
+            show_all_unpublished = (request_unpublished and
+                                    (can_submit_as or
+                                     request.user.is_superuser))
 
             queryset = self.model.objects.public(
                 user=request.user,
                 status=status,
                 local_site=local_site,
                 extra_query=q,
-                show_all_unpublished=(
-                    'show-all-unpublished' in request.GET and
-                    request.user.is_superuser
-                ))
+                show_all_unpublished=show_all_unpublished)
+
+            # Only select/prefetch these for list resources, since we want to
+            # reduce the number of queries. We don't want to do this when
+            # retrieving individual items, as they'd end up stuck with
+            # prefetched state, which could impact things when handling
+            # PUT/DELETE operations.
+            #
+            # Here's a real-world example (which is interesting enough to
+            # talk about): We had a bug before when the prefetching was done
+            # for item resources where a publish on the draft resource would
+            # fetch the review request from this resource (going through this
+            # function and therefore prefetching), and then the publish
+            # operation would associate the new diffset and then emit the
+            # review_request_published signal. Handlers listening to this that
+            # tried to fetch diffsets (Review Bot, in our case) would not see
+            # the new diffset.
+            #
+            # By having this only in the list condition, we get the perforamnce
+            # benefits we wanted without triggering that sort of bug.
+            queryset = (
+                queryset
+                .select_related('diffset_history')
+                .prefetch_related('changedescs',
+                                  'diffset_history__diffsets')
+            )
         else:
             queryset = self.model.objects.filter(local_site=local_site)
 
-        return queryset.prefetch_related('changedescs')
+        return queryset
 
     def has_access_permissions(self, request, review_request, *args, **kwargs):
         return review_request.is_accessible_by(request.user)
@@ -446,7 +536,7 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
                 # use that instead of looking up from the database again.
                 return obj._close_description_rich_text
             else:
-                return obj.get_close_description()[1]
+                return obj.get_close_info()['is_rich_text']
         else:
             return False
 
@@ -460,7 +550,7 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
                 # use that instead of looking up from the database again.
                 return obj._close_description
             else:
-                return obj.get_close_description()[0]
+                return obj.get_close_info()['close_description']
         else:
             return None
 
@@ -476,7 +566,7 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         return obj.shipit_count
 
     def serialize_status_field(self, obj, **kwargs):
-        return status_to_string(obj.status)
+        return ReviewRequest.status_to_string(obj.status)
 
     def serialize_testing_done_text_type_field(self, obj, **kwargs):
         # This will be overridden by MarkdownFieldsMixin.
@@ -552,7 +642,7 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
                 'description': 'The optional user to submit the review '
                                'request as. This requires that the actual '
                                'logged in user is either a superuser or has '
-                               'the "reviews.can_submit_as_another_user" '
+                               'the ``reviews.can_submit_as_another_user`` '
                                'permission.',
             },
         },
@@ -592,10 +682,8 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         is useful when writing automation scripts, such as post-commit hooks,
         that need to create review requests for another user.
 
-        Extra data can be stored on the review request for later lookup by
-        passing ``extra_data.key_name=value``. The ``key_name`` and ``value``
-        can be any valid strings. Passing a blank ``value`` will remove the
-        key.  The ``extra_data.`` prefix is required.
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         user = request.user
         local_site = self._get_local_site(local_site_name)
@@ -621,16 +709,9 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
 
         if repository is not None:
             try:
-                try:
-                    repository = Repository.objects.get(pk=int(repository),
-                                                        local_site=local_site)
-                except ValueError:
-                    # The repository is not an ID.
-                    repository = Repository.objects.get(
-                        (Q(path=repository) |
-                         Q(mirror_path=repository) |
-                         Q(name=repository)) &
-                        Q(local_site=local_site))
+                repository = Repository.objects.get_best_match(
+                    repo_identifier=repository,
+                    local_site=local_site)
             except Repository.DoesNotExist:
                 return INVALID_REPOSITORY, {
                     'repository': repository
@@ -653,9 +734,13 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
                 create_from_commit_id=create_from_commit_id)
 
             if extra_fields:
-                self.import_extra_data(review_request,
-                                       review_request.extra_data,
-                                       extra_fields)
+                try:
+                    self.import_extra_data(review_request,
+                                           review_request.extra_data,
+                                           extra_fields)
+                except ImportExtraDataError as e:
+                    return e.error_payload
+
                 review_request.save(update_fields=['extra_data'])
 
             return 201, {
@@ -683,21 +768,22 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
                 'message': six.text_type(e),
             }
         except SSHError as e:
-            logging.error("Got unexpected SSHError when creating "
-                          "repository: %s"
-                          % e, exc_info=1, request=request)
-            return REPO_INFO_ERROR
+            logging.exception('Got unexpected SSHError when creating '
+                              'review request: %s',
+                              e,
+                              request=request)
+            return REPO_INFO_ERROR.with_message('SSH Error: %s' % e)
+        except HostingServiceError as e:
+            return REPO_INFO_ERROR.with_message(six.text_type(e))
         except SCMError as e:
-            logging.error("Got unexpected SCMError when creating "
-                          "repository: %s"
-                          % e, exc_info=1, request=request)
-            return REPO_INFO_ERROR
+            return REPO_INFO_ERROR.with_message(six.text_type(e))
         except ValidationError:
             return COMMIT_ID_ALREADY_EXISTS
 
     @webapi_check_local_site
     @webapi_login_required
-    @webapi_response_errors(DOES_NOT_EXIST, NOT_LOGGED_IN, PERMISSION_DENIED)
+    @webapi_response_errors(DOES_NOT_EXIST, NOT_LOGGED_IN, PERMISSION_DENIED,
+                            REPO_INFO_ERROR)
     @webapi_request_fields(
         optional={
             'status': {
@@ -767,7 +853,7 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
                                'of the update field.\n'
                                '\n'
                                'This is deprecated. Please use '
-                               'close_description_text_type instead.',
+                               '``close_description_text_type`` instead.',
                 'added_in': '2.0',
                 'deprecated_in': '2.0.12',
             },
@@ -798,10 +884,8 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         This can be accessed through the ``draft`` link. Only when that
         draft is published will the changes end up back in this resource.
 
-        Extra data can be stored on the review request for later lookup by
-        passing ``extra_data.key_name=value``. The ``key_name`` and ``value``
-        can be any valid strings. Passing a blank ``value`` will remove the
-        key. The ``extra_data.`` prefix is required.
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         try:
             review_request = \
@@ -821,7 +905,7 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
             return self.get_no_access_error(request)
 
         if (status is not None and
-            (review_request.status != string_to_status(status) or
+            (review_request.status != ReviewRequest.string_to_status(status) or
              review_request.status != ReviewRequest.PENDING_REVIEW)):
             try:
                 if status in self._close_type_map:
@@ -888,12 +972,21 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
                 return INVALID_CHANGE_NUMBER
             except EmptyChangeSetError:
                 return EMPTY_CHANGESET
+            except HostingServiceError as e:
+                return REPO_INFO_ERROR.with_message(six.text_type(e))
+            except SCMError as e:
+                return REPO_INFO_ERROR.with_message(six.text_type(e))
 
             draft.save()
 
         if extra_fields:
-            self.import_extra_data(review_request, review_request.extra_data,
-                                   extra_fields)
+            try:
+                self.import_extra_data(review_request,
+                                       review_request.extra_data,
+                                       extra_fields)
+            except ImportExtraDataError as e:
+                return e.error_payload
+
             changed_fields.append('extra_data')
 
         if changed_fields:
@@ -920,9 +1013,16 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         """
         pass
 
+    @webapi_check_login_required
     @webapi_check_local_site
     @webapi_request_fields(
         optional={
+            'branch': {
+                'type': six.text_type,
+                'description': 'The branch field on a review request to '
+                               'filter by.',
+                'added_in': '3.0.16',
+            },
             'changenum': {
                 'type': int,
                 'description': 'The change number the review requests must '
@@ -983,97 +1083,98 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
             },
             'show-all-unpublished': {
                 'type': bool,
-                'description': 'If set, and if the user is an admin, '
-                               'unpublished review requests will also '
-                               'be returned.',
-                'aded_in': '2.0.8',
+                'description': 'If set, and if the user is an admin or has '
+                               'the "reviews.can_submit_as_another_user" '
+                               'permission, unpublished review requests '
+                               'will also be returned.',
+                'added_in': '2.0.8',
             },
             'issue-dropped-count': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have exactly the '
                                'provided number of dropped issues.',
                 'added_in': '2.0',
             },
             'issue-dropped-count-lt': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have less than the '
                                'provided number of dropped issues.',
                 'added_in': '2.0',
             },
             'issue-dropped-count-lte': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have at most the '
                                'provided number of dropped issues.',
                 'added_in': '2.0',
             },
             'issue-dropped-count-gt': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have more than the '
                                'provided number of dropped issues.',
                 'added_in': '2.0',
             },
             'issue-dropped-count-gte': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have at least the '
                                'provided number of dropped issues.',
                 'added_in': '2.0',
             },
             'issue-open-count': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have exactly the '
                                'provided number of open issues.',
                 'added_in': '2.0',
             },
             'issue-open-count-lt': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have less than the '
                                'provided number of open issues.',
                 'added_in': '2.0',
             },
             'issue-open-count-lte': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have at most the '
                                'provided number of open issues.',
                 'added_in': '2.0',
             },
             'issue-open-count-gt': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have more than the '
                                'provided number of open issues.',
                 'added_in': '2.0',
             },
             'issue-open-count-gte': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have at least the '
                                'provided number of open issues.',
                 'added_in': '2.0',
             },
             'issue-resolved-count': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have exactly the '
                                'provided number of resolved issues.',
                 'added_in': '2.0',
             },
             'issue-resolved-count-lt': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have less than the '
                                'provided number of resolved issues.',
                 'added_in': '2.0',
             },
             'issue-resolved-count-lte': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have at most the '
                                'provided number of resolved issues.',
                 'added_in': '2.0',
             },
             'issue-resolved-count-gt': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have more than the '
                                'provided number of resolved issues.',
                 'added_in': '2.0',
             },
             'issue-resolved-count-gte': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have at least the '
                                'provided number of resolved issues.',
                 'added_in': '2.0',
@@ -1088,31 +1189,31 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
                 'deprecated_in': '2.0',
             },
             'ship-it-count': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have exactly the '
                                'provided number of Ship Its.',
                 'added_in': '2.0',
             },
             'ship-it-count-lt': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have less than the '
                                'provided number of Ship Its.',
                 'added_in': '2.0',
             },
             'ship-it-count-lte': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have at most the '
                                'provided number of Ship Its.',
                 'added_in': '2.0',
             },
             'ship-it-count-gt': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have more than the '
                                'provided number of Ship Its.',
                 'added_in': '2.0',
             },
             'ship-it-count-gte': {
-                'type': bool,
+                'type': int,
                 'description': 'The review request must have at least the '
                                'provided number of Ship Its.',
                 'added_in': '2.0',
@@ -1149,8 +1250,7 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         },
         allow_unknown=True
     )
-    @augment_method_from(WebAPIResource)
-    def get_list(self, *args, **kwargs):
+    def get_list(self, request, *args, **kwargs):
         """Returns all review requests that the user has read access to.
 
         By default, this returns all published or formerly published
@@ -1159,7 +1259,37 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
         The resulting list can be filtered down through the many
         request parameters.
         """
-        pass
+        invalid_fields = {}
+        current_tz = get_current_timezone()
+
+        for field in ('time-added-from', 'time-added-to', 'last-updated-from',
+                      'last-updated-to'):
+            if field in request.GET:
+                try:
+                    date = dateutil.parser.parse(request.GET[field])
+
+                    if not is_aware(date):
+                        date = make_aware(date, current_tz)
+
+                    kwargs[field] = date
+                except AmbiguousTimeError:
+                    invalid_fields[field] = [
+                        'The given timestamp string was ambiguous because of '
+                        'daylight savings time changes. You may specify a UTC '
+                        'offset instead.'
+                    ]
+                except ValueError:
+                    invalid_fields[field] = [
+                        'The given timestamp could not be parsed.'
+                    ]
+
+        if invalid_fields:
+            return INVALID_FORM_DATA, {
+                'fields': invalid_fields,
+            }
+        else:
+            return super(ReviewRequestResource, self).get_list(
+                request, *args, **kwargs)
 
     @augment_method_from(WebAPIResource)
     def get(self, *args, **kwargs):
@@ -1207,12 +1337,6 @@ class ReviewRequestResource(MarkdownFieldsMixin, WebAPIResource):
 
         return request.build_absolute_uri(
             self.get_item_url(local_site_name=local_site_name, **href_kwargs))
-
-    def _parse_date(self, timestamp_str):
-        try:
-            return dateutil.parser.parse(timestamp_str)
-        except ValueError:
-            return None
 
     def _find_user(self, username, local_site, request):
         """Finds a User object matching ``username``.

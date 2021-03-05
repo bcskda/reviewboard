@@ -59,7 +59,7 @@ fieldset {
 blockquote {
   border-left: 5px solid #ddd;
   color: #777;
-  font-size: 11px;
+  font-size: @admin_font_size;
   margin-left: 2px;
   padding-left: 10px;
 }
@@ -67,7 +67,7 @@ blockquote {
 code, pre {
   background: inherit;
   color: #666;
-  font-size: 11px;
+  font-size: @admin_font_size;
 }
 
 pre.literal-block {
@@ -98,11 +98,11 @@ hr {
  ****************************************************************************/
 
 .small {
-  font-size: 11px;
+  font-size: @admin_font_size;
 }
 
 .tiny {
-  font-size: 10px;
+  font-size: (@admin_font_size - 1px);
 }
 
 p.tiny {
@@ -110,7 +110,7 @@ p.tiny {
 }
 
 .mini {
-  font-size: 9px;
+  font-size: (@admin_font_size - 2px);
 }
 
 p.mini {
@@ -118,8 +118,8 @@ p.mini {
 }
 
 .help, p.help {
-  color: #999;
-  font-size: 10px !important;
+  color: @admin-help-text-color;
+  font-size: (@admin_font_size - 1px) !important;
 }
 
 img.help-tooltip {
@@ -178,14 +178,14 @@ table {
 
 td, th {
   border-bottom: 1px solid #eee;
-  font-size: 11px;
+  font-size: @admin_font_size;
   line-height: 13px;
   padding: 5px;
   vertical-align: top;
 }
 
 th {
-  font-size: 12px;
+  font-size: (@admin_font_size + 1px);
   font-weight: bold;
   text-align: left;
 }
@@ -196,7 +196,7 @@ tfoot td {
   border-bottom: 1px solid #ddd;
   border-left: 1px solid #ddd;
   color: #666;
-  font-size: 11px;
+  font-size: @admin_font_size;
   padding: 2px 5px;
 
   &:first-child {
@@ -220,7 +220,7 @@ fieldset table {
 tr.row-label td {
   border-bottom: none;
   color: #666;
-  font-size: 9px;
+  font-size: (@admin_font_size - 2px);
   margin-top: -1px;
   padding-bottom: 0;
   padding-top: 2px;
@@ -405,7 +405,7 @@ ul.messagelist {
     border: 1px solid @admin-msg-banner-border-color;
     color: #666;
     display: block;
-    font-size: 12px;
+    font-size: (@admin_font_size + 1px);
     margin: 0 0 3px 0;
     padding: 4px 5px 4px 25px;
 
@@ -424,7 +424,7 @@ ul.messagelist {
   border: 1px solid red;
   color: red;
   display: block;
-  font-size: 12px !important;
+  font-size: (@admin_font_size + 1px) !important;
   margin: 0 0 3px 0;
   padding: 4px 5px 4px 25px;
 }
@@ -438,7 +438,7 @@ ul.errorlist {
     border: 1px solid red;
     color: white;
     display: block;
-    font-size: 12px !important;
+    font-size: (@admin_font_size + 1px) !important;
     margin: 0 0 3px 0;
     padding: 4px 5px 4px 25px;
 
@@ -481,7 +481,7 @@ div.system-message {
 }
 
 .description {
-  font-size: 12px;
+  font-size: (@admin_font_size + 1px);
   padding: 5px 0 0 12px;
 }
 
@@ -495,7 +495,7 @@ div.breadcrumbs {
   border-bottom: 1px solid #ccc;
   border-top: 1px solid white;
   color: #999;
-  font-size: 11px;
+  font-size: @admin_font_size;
   padding: 2px 8px 3px 8px;
   text-align: left;
 }
@@ -515,10 +515,24 @@ div.breadcrumbs {
   padding: 0 0 @page-container-padding @page-container-padding;
 }
 
+.popup {
+  #page-container #content_container {
+    margin-left: 0 !important;
+  }
+
+  #content {
+    padding: 0;
+  }
+
+  #topbar > * {
+    display: none;
+  }
+}
+
 h1.title {
   border: 1px @box-border-color solid;
+  box-shadow: @box-shadow;
   text-transform: uppercase;
-  .box-shadow(@box-shadow);
 }
 
 #header {
@@ -532,13 +546,13 @@ h1.title {
   width: 18em;
 
   h3 {
-    font-size: 12px;
+    font-size: (@admin_font_size + 1px);
     color: #666;
     margin-bottom: 3px;
   }
 
   h4 {
-    font-size: 11px;
+    font-size: @admin_font_size;
   }
 
   .module {
@@ -567,7 +581,7 @@ h1.title {
 
 .flex {
   h1.title {
-    .border-radius(@box-border-radius @box-border-radius 0 0);
+    border-radius: @box-border-radius @box-border-radius 0 0;
   }
 }
 
@@ -583,14 +597,6 @@ h1.title {
     margin-left: -19em;
     margin-right: 0;
   }
-}
-
-.popup .colM {
-  width: 95%;
-}
-
-.popup #content.colM, .popup .flex, .login #content.colM {
-  margin-left: 20px !important;
 }
 
 .subcol {
@@ -664,18 +670,18 @@ td, th {
 .module {
   background: white;
   border: 1px solid @box-border-color;
+  border-radius: @box-border-radius;
+  box-shadow: @box-shadow;
   margin-top: 10px;
   overflow: hidden;
-  .border-radius(@box-border-radius);
-  .box-shadow(@box-shadow);
 
   &.filtered {
     border-top: 0;
     margin-top: 0;
-    .border-radius(0 0 @box-border-radius @box-border-radius);
+    border-radius: 0 0 @box-border-radius @box-border-radius;
 
     .paginator {
-      .border-radius(0 0 @box-border-radius @box-border-radius);
+      border-radius: 0 0 @box-border-radius @box-border-radius;
     }
   }
 
@@ -795,7 +801,7 @@ td, th {
   background: url("@{img_base}/title_box_top_bg.png") repeat-x scroll left top #A2BEDC;
   border-bottom: 1px solid @box-border-color;
   color: black;
-  font-size: 11px;
+  font-size: @admin_font_size;
   font-weight: normal;
   margin: 0;
   padding: 0.5em 1em;
@@ -814,20 +820,20 @@ td, th {
   textarea {
     background: #FFFDC9;
     border: 0;
+    box-sizing: border-box;
     margin: 0;
     padding: 1em;
     width: 100%;
-    .box-sizing(border-box);
     resize: none;
   }
 }
 
-.change-form, .dashboard {
+.change-form, .dashboard, .permission-denied {
   #content-main {
     border: 1px @box-border-color solid;
-    .border-radius(0 0 @box-border-radius @box-border-radius);
-    .box-shadow(@box-shadow);
-    .box-sizing(border-box);
+    border-radius: 0 0 @box-border-radius @box-border-radius;
+    box-shadow: @box-shadow;
+    box-sizing: border-box;
     float: left;
     width: 100%;
   }
@@ -835,8 +841,8 @@ td, th {
   fieldset {
     background: transparent;
     border: 0;
-    .border-radius(0);
-    .box-shadow(none);
+    border-radius: 0;
+    box-shadow: none;
     margin: 0 0 1em 0;
 
     &:first-child>h2 {
@@ -872,7 +878,7 @@ td, th {
   }
 
   form>p {
-    font-size: 12px;
+    font-size: (@admin_font_size + 1px);
     margin: 2em 12px; // Align with form fields.
   }
 
@@ -883,8 +889,8 @@ td, th {
 
   .submit-row {
     border: 0;
+    border-radius: 0 0 @box-border-radius @box-border-radius;
     border-top: 1px lighten(@box-border-color, 15%) solid;
-    .border-radius(0 0 @box-border-radius @box-border-radius);
     margin: 0;
 
     input, .deletelink-box {
@@ -909,8 +915,8 @@ td, th {
   }
 
   #changelist {
-    .border-radius(0 0 @box-border-radius @box-border-radius);
-    .box-sizing(border-box);
+    border-radius: 0 0 @box-border-radius @box-border-radius;
+    box-sizing: border-box;
     margin-top: 0;
 
     table {
@@ -949,7 +955,7 @@ td, th {
     }
 
     .paginator {
-      .border-radius(0 0 @box-border-radius @box-border-radius);
+      border-radius: 0 0 @box-border-radius @box-border-radius;
     }
   }
 }
@@ -973,7 +979,7 @@ td, th {
   }
 
   li {
-    font-size: 12px;
+    font-size: (@admin_font_size + 1px);
     line-height: 16px;
   }
 
@@ -983,7 +989,7 @@ td, th {
     h3 {
       color: black;
       font-weight: bold;
-      font-size: 12px;
+      font-size: (@admin_font_size + 1px);
       margin-bottom: 1em;
     }
 
@@ -999,6 +1005,10 @@ td, th {
   .form-row {
     border: 0;
   }
+}
+
+.permission-denied #content-main p {
+  margin: 1em;
 }
 
 .public-key {
@@ -1017,7 +1027,7 @@ td, th {
     color: black;
     margin: 0;
     padding: 0;
-    .pre-wrap;
+    white-space: pre-wrap;
   }
 
   .level-debug {
@@ -1053,20 +1063,21 @@ td, th {
 
 .extensions-list-page {
   #content-main {
+    .border-radius(0 0 @box-border-radius @box-border-radius);
+    .box-shadow(@box-shadow);
     float: left;
     width: 100%;
   }
 }
 
 .extensions {
-  .border-radius(0 0 @box-border-radius @box-border-radius);
-  .box-shadow(@box-shadow);
+  border-radius: 0 0 @box-border-radius @box-border-radius;
 
   .extension {
     padding: @box-padding;
 
     &:last-child {
-      .border-radius(0 0 @box-inner-border-radius @box-inner-border-radius);
+      border-radius: 0 0 @box-inner-border-radius @box-inner-border-radius;
     }
 
     .author {
@@ -1101,7 +1112,7 @@ td, th {
 
 .object-tools {
   float: right;
-  font-size: 11px;
+  font-size: @admin_font_size;
   margin: -2.2em 0 -2em 0;
   padding: 0;
   position: relative;
@@ -1173,12 +1184,12 @@ table#change-history {
   }
 
   p, pre, th, td {
-    font-size: 12px;
+    font-size: (@admin_font_size + 1px);
   }
 
   pre {
     margin: 2em 1em;
-    .pre-wrap();
+    white-space: pre-wrap;
   }
 
   table.sample-fields {
@@ -1284,4 +1295,59 @@ table#change-history {
   .field-custom_content {
     display: none;
   }
+}
+
+
+/***************************************************************************
+ * Related object autocomplete
+ ***************************************************************************/
+
+.admin .related-object-select {
+  display: inline-block;
+  width: 35em;
+}
+
+
+/***************************************************************************
+ * Repository configuration page
+ ***************************************************************************/
+#repository_form {
+  #hosting-auth-form-gitlab {
+    .gitlab-url-options {
+      display: inline-block;
+      vertical-align: top;
+
+      input {
+        vertical-align: baseline;
+      }
+
+      label {
+        display: inline-block;
+        float: none;
+        vertical-align: baseline;
+        width: 10em !important;
+      }
+    }
+  }
+
+  .powerpack-advert,
+  .gerrit-plugin-advert {
+    p {
+      margin-left: 0;
+    }
+  }
+}
+
+#repo-edit-hosting-credentials {
+  color: @link-color;
+  margin-left: 0.5em;
+  vertical-align: middle;
+}
+
+
+/***************************************************************************
+ * OAuth2 Application page
+ ***************************************************************************/
+#application_form #id_client_secret_container {
+  overflow: hidden;
 }

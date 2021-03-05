@@ -8,6 +8,8 @@ from djblets.webapi.resources.mixins.forms import (
 
 from reviewboard.reviews.markdown_utils import (markdown_set_field_escaped,
                                                 render_markdown)
+from reviewboard.webapi.base import ImportExtraDataError
+
 
 class MarkdownFieldsMixin(object):
     """Mixes in common logic for Markdown text fields.
@@ -71,10 +73,10 @@ class MarkdownFieldsMixin(object):
         if force_text_type not in self.TEXT_TYPES:
             force_text_type = None
 
-        extra_text_type_fields = dict([
+        extra_text_type_fields = dict(
             (extra_text_type, {})
             for extra_text_type in self._get_extra_text_types(obj, **kwargs)
-        ])
+        )
 
         for field, field_info in six.iteritems(self.fields):
             if not field_info.get('supports_text_types'):
@@ -95,10 +97,23 @@ class MarkdownFieldsMixin(object):
             extra_data = data['extra_data']
             all_text_types_extra_data = {}
 
+            if obj.extra_data is None:
+                obj.extra_data = {}
+
             # Work on a copy of extra_data, in case we change it.
             for field, value in six.iteritems(obj.extra_data.copy()):
                 if not self.get_extra_data_field_supports_markdown(obj, field):
                     continue
+
+                # If all_text_types_extra_data is empty that implies we have
+                # encountered the first field in extra_data which supports
+                # markdown. In this case we must initialize the dictionary
+                # with the extra text types that should be included in the
+                # payload.
+                if not all_text_types_extra_data:
+                    all_text_types_extra_data = dict(
+                        (k, {}) for k in six.iterkeys(extra_text_type_fields)
+                    )
 
                 # Note that we assume all custom fields are in Markdown by
                 # default. This is to preserve compatibility with older
@@ -234,7 +249,50 @@ class MarkdownFieldsMixin(object):
                         text_type_field_name=None,
                         text_model_field=None,
                         **kwargs):
-        """Normalizes Markdown-capable text fields that are being saved."""
+        """Normalize Markdown-capable text fields that are being saved.
+
+        Args:
+            obj (django.db.models.Model):
+                The object containing Markdown-capable fields to modify.
+
+            text_field (unicode):
+                The key from ``kwargs`` containing the new value for the
+                text fields.
+
+            rich_text_field_name (unicode, optional):
+                The name of the boolean field on ``obj`` representing the
+                rich text state.
+
+                If not provided, a name will be generated based on the value
+                of ``text_field`` (``'rich_text'`` if ``text_field`` is
+                ``'text'``, or :samp:`{text_field}_rich_text` otherwise).
+
+            text_type_field_name (unicode, optional):
+                The key from ``kwargs`` containing the text type.
+
+                If not provided, a name will be generated based on the value
+                of ``text_field`` (``'text_type'`` if ``text_field`` is
+                ``'text'``, or :samp:`{text_field}_text_type` otherwise).
+
+            text_model_field (unicode, optional):
+                The name of the text field on ``obj``.
+
+                If not provided, ``text_field`` will be used for the value.
+
+            **kwargs (dict):
+                Any fields passed by the client. These should be values
+                corresponding to ``text_type_field_name`` and ``text_field``
+                in here.
+
+                This may also contain a legacy value of ``'text_type'``,
+                which will be used if ``text_type_field_name`` is not present.
+
+        Returns:
+            set:
+            The fields on ``obj`` that were set based on the request.
+        """
+        modified_fields = set()
+
         if not text_model_field:
             text_model_field = text_field
 
@@ -245,44 +303,74 @@ class MarkdownFieldsMixin(object):
             rich_text_field_name = self._get_rich_text_field_name(text_field)
 
         old_rich_text = getattr(obj, rich_text_field_name, None)
+        text = kwargs.get(text_field)
 
-        if text_field in kwargs:
-            setattr(obj, text_model_field, kwargs[text_field].strip())
+        if text is not None:
+            setattr(obj, text_model_field, text.strip())
+            modified_fields.add(text_model_field)
 
-        if text_type_field_name in kwargs or 'text_type' in kwargs:
-            text_type = kwargs.get(text_type_field_name,
-                                   kwargs.get('text_type'))
+        legacy_text_type = kwargs.get('text_type')
+        text_type = kwargs.get(text_type_field_name, legacy_text_type)
+
+        if text_type is not None:
             rich_text = (text_type == self.TEXT_TYPE_MARKDOWN)
 
             setattr(obj, rich_text_field_name, rich_text)
+            modified_fields.add(rich_text_field_name)
 
             # If the caller has changed the text type for this field, but
             # hasn't provided a new field value, then we will need to update
             # the affected field's existing contents by escaping or
             # unescaping.
-            if rich_text != old_rich_text and text_field not in kwargs:
-                markdown_set_field_escaped(obj, text_model_field,
-                                           rich_text)
+            if rich_text != old_rich_text and text is None:
+                markdown_set_field_escaped(obj, text_model_field, rich_text)
+                modified_fields.add(text_model_field)
         elif old_rich_text:
             # The user didn't specify rich-text, but the object may be set
             # for rich-text, in which case we'll need to pre-escape the text
             # field.
-            if text_field in kwargs:
+            if text is not None:
                 markdown_set_field_escaped(obj, text_model_field,
                                            old_rich_text)
+                modified_fields.add(text_model_field)
+
+        return modified_fields
 
     def set_extra_data_text_fields(self, obj, text_field, extra_fields,
                                    **kwargs):
-        """Normalizes Markdown-capable text fields in extra_data.
+        """Normalize Markdown-capable text fields in extra_data.
 
         This will check if any Markdown-capable text fields in extra_data
         have been changed (either by changing the text or the text type),
         and handle the saving of the text and type.
 
-        This works just like set_text_fields, but specially handles
+        This works just like :py:meth:`set_text_fields`, but specially handles
         how things are stored in extra_data (text_type vs. rich_text fields,
         possible lack of presence of a text_type field, etc.).
+
+        Args:
+            obj (django.db.models.Model):
+                The object containing Markdown-capable fields to modify.
+
+            text_field (unicode):
+                The key from ``kwargs`` containing the new value for the
+                text fields.
+
+            extra_fields (dict):
+                Fields passed to the API resource that aren't natively handled
+                by that resource. These may contain ``extra_data.``-prefixed
+                keys.
+
+            **kwargs (dict):
+                Any fields passed by the client. This may be checked for a
+                legacy ``text_type`` field.
+
+        Returns:
+            set:
+            The keys in ``extra_data`` that were set based on the request.
         """
+        modified_fields = set()
+
         text_type_field = self._get_text_type_field_name(text_field)
         extra_data = obj.extra_data
         extra_data_text_field = 'extra_data.' + text_field
@@ -293,9 +381,10 @@ class MarkdownFieldsMixin(object):
             # stripped.
             extra_data[text_field] = \
                 extra_fields[extra_data_text_field].strip()
+            modified_fields.add(text_field)
         elif extra_data_text_type_field not in extra_fields:
             # Nothing about this field has changed, so bail.
-            return
+            return modified_fields
 
         old_text_type = extra_data.get(text_type_field)
         text_type = extra_fields.get(extra_data_text_type_field,
@@ -314,6 +403,7 @@ class MarkdownFieldsMixin(object):
                 markdown_set_field_escaped(
                     extra_data, text_field,
                     text_type == self.TEXT_TYPE_MARKDOWN)
+                modified_fields.add(text_field)
         elif old_text_type:
             # The user didn't specify a text type, but the object may be set
             # for Markdown, in which case we'll need to pre-escape the text
@@ -322,11 +412,15 @@ class MarkdownFieldsMixin(object):
                 markdown_set_field_escaped(
                     extra_data, text_field,
                     old_text_type == self.TEXT_TYPE_MARKDOWN)
+                modified_fields.add(text_field)
 
         # Ensure we have a text type set for this field. If one wasn't
         # provided or set above, we'll set it to the default now.
         extra_data[text_type_field] = \
             text_type or self.DEFAULT_EXTRA_DATA_TEXT_TYPE
+        modified_fields.add(text_type_field)
+
+        return modified_fields
 
     def _get_text_type_field_name(self, text_field_name):
         if text_field_name == 'text':
@@ -369,21 +463,63 @@ class UpdateFormMixin(DjbletsUpdateFormMixin):
     from the instance.
     """
 
-    def save_form(self, form, extra_fields=None):
+    def handle_form_request(self, **kwargs):
+        """Handle an HTTP request for creating or updating through a form.
+
+        This simply wraps the parent method and handles
+        :py:class:`~reviewboard.webapi.base.ImportExtraDataError` exceptions
+        during form save.
+
+        Args:
+            **kwargs (dict):
+                Keyword arguments to pass to the parent method.
+
+        Returns:
+            tuple or django.http.HttpResponse:
+            The response to send back to the client.
+        """
+        try:
+            return super(UpdateFormMixin, self).handle_form_request(**kwargs)
+        except ImportExtraDataError as e:
+            return e.error_payload
+
+    def save_form(self, form, save_kwargs, extra_fields=None, **kwargs):
         """Save the form and extra data.
 
         Args:
             form (django.forms.ModelForm):
                 The form to save.
 
-            extra_fields (dict):
+            save_kwargs (dict):
+                Additional keyword arguments to pass to the
+                :py:class:`ModelForm.save() <django.forms.ModelForm.save>`.
+
+            extra_fields (dict, optional):
                 The extra data to save on the object. These should be key-value
                 pairs in the form of ``extra_data.key = value``.
 
+            **kwargs (dict):
+                Additional keyword arguments to pass to the parent method.
+
         Returns:
-            django.db.models.Model: The saved model instance.
+            django.db.models.Model:
+            The saved model instance.
+
+        Raises:
+            reviewboard.webapi.base.ImportExtraDataError:
+                Extra data failed to import. The form will not be saved.
         """
-        instance = form.save(commit=False)
+        if save_kwargs:
+            save_kwargs = save_kwargs.copy()
+        else:
+            save_kwargs = {}
+
+        save_kwargs['commit'] = False
+
+        instance = super(UpdateFormMixin, self).save_form(
+            form=form,
+            save_kwargs=save_kwargs,
+            **kwargs)
 
         if extra_fields:
             if not instance.extra_data:

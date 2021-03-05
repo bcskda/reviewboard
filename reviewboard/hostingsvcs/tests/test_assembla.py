@@ -1,16 +1,28 @@
+"""Unit tests for the Assembla hosting service."""
+
 from __future__ import unicode_literals
 
 import nose
 
-from reviewboard.hostingsvcs.tests.testcases import ServiceTests
+from reviewboard.admin.server import get_hostname
+from reviewboard.hostingsvcs.testing import HostingServiceTestCase
+from reviewboard.scmtools.crypto_utils import encrypt_password
 from reviewboard.scmtools.models import Repository, Tool
 
 
-class AssemblaTests(ServiceTests):
-    """Unit tests for the Assembla hosting service."""
+class AssemblaTestCase(HostingServiceTestCase):
+    """Base class for Assembla test suites."""
 
     service_name = 'assembla'
     fixtures = ['test_scmtools']
+
+    default_account_data = {
+        'password': encrypt_password('abc123'),
+    }
+
+
+class AssemblaTests(AssemblaTestCase):
+    """Unit tests for the Assembla hosting service."""
 
     def test_service_support(self):
         """Testing Assembla service support capabilities"""
@@ -20,69 +32,37 @@ class AssemblaTests(ServiceTests):
         self.assertEqual(self.service_class.supported_scmtools,
                          ['Perforce', 'Subversion'])
 
-    def test_repo_field_values_perforce(self):
-        """Testing Assembla repository field values for Perforce"""
-        fields = self._get_repository_fields('Perforce', fields={
-            'assembla_project_id': 'myproject',
-        })
-        self.assertEqual(fields['path'], 'perforce.assembla.com:1666')
-        self.assertNotIn('mirror_path', fields)
-        self.assertIn('encoding', fields)
-        self.assertEqual(fields['encoding'], 'utf8')
+    def test_get_repository_fields_with_perforce(self):
+        """Testing Assembla.get_repository_fields for Perforce"""
+        self.assertEqual(
+            self.get_repository_fields(
+                'Perforce',
+                fields={
+                    'assembla_project_id': 'myproject',
+                }
+            ),
+            {
+                'path': 'perforce.assembla.com:1666',
+                'encoding': 'utf8',
+            })
 
-    def test_repo_field_values_subversion(self):
-        """Testing Assembla repository field values for Subversion"""
-        fields = self._get_repository_fields('Subversion', fields={
-            'assembla_project_id': 'myproject',
-            'assembla_repo_name': 'myrepo',
-        })
-        self.assertEqual(fields['path'],
-                         'https://subversion.assembla.com/svn/myproject/')
-        self.assertNotIn('mirror_path', fields)
-        self.assertNotIn('encoding', fields)
-
-    def test_save_form_perforce(self):
-        """Testing Assembla configuration form with Perforce"""
-        try:
-            account = self._get_hosting_account()
-            service = account.service
-            service.authorize('myuser', 'abc123', None)
-
-            repository = Repository(hosting_account=account,
-                                    tool=Tool.objects.get(name='Perforce'))
-
-            form = self._get_form(fields={'assembla_project_id': 'myproject'})
-            form.save(repository)
-
-            self.assertIn('use_ticket_auth', repository.extra_data)
-            self.assertTrue(repository.extra_data['use_ticket_auth'])
-            self.assertIn('p4_host', repository.extra_data)
-            self.assertEqual(repository.extra_data['p4_host'], 'myproject')
-        except ImportError:
-            raise nose.SkipTest
-
-    def test_save_form_subversion(self):
-        """Testing Assembla configuration form with Subversion"""
-        try:
-            account = self._get_hosting_account()
-            service = account.service
-            service.authorize('myuser', 'abc123', None)
-
-            repository = Repository(path='https://svn.example.com/',
-                                    hosting_account=account,
-                                    tool=Tool.objects.get(name='Subversion'))
-
-            form = self._get_form(fields={'assembla_project_id': 'myproject'})
-            form.save(repository)
-
-            self.assertNotIn('use_ticket_auth', repository.extra_data)
-            self.assertNotIn('p4_host', repository.extra_data)
-        except ImportError:
-            raise nose.SkipTest
+    def test_get_repository_fields_with_subversion(self):
+        """Testing Assembla.get_repository_fields for Subversion"""
+        self.assertEqual(
+            self.get_repository_fields(
+                'Subversion',
+                fields={
+                    'assembla_project_id': 'myproject',
+                    'assembla_repo_name': 'myrepo',
+                }
+            ),
+            {
+                'path': 'https://subversion.assembla.com/svn/myproject/',
+            })
 
     def test_authorize(self):
-        """Testing Assembla authorization password storage"""
-        account = self._get_hosting_account()
+        """Testing Assembla.authorize"""
+        account = self.create_hosting_account(data={})
         service = account.service
 
         self.assertFalse(service.is_authorized())
@@ -94,9 +74,9 @@ class AssemblaTests(ServiceTests):
         self.assertTrue(service.is_authorized())
 
     def test_check_repository_perforce(self):
-        """Testing Assembla check_repository with Perforce"""
+        """Testing Assembla.check_repository with Perforce"""
         try:
-            account = self._get_hosting_account()
+            account = self.create_hosting_account()
             service = account.service
 
             service.authorize('myuser', 'abc123', None)
@@ -115,15 +95,16 @@ class AssemblaTests(ServiceTests):
 
             self.assertTrue(scmtool.check_repository.called)
             self.assertIn('p4_host', scmtool.check_repository.last_call.kwargs)
-            self.assertEqual(scmtool.check_repository.last_call.kwargs['p4_host'],
-                             'myproject')
+            self.assertEqual(
+                scmtool.check_repository.last_call.kwargs['p4_host'],
+                'myproject')
         except ImportError:
             raise nose.SkipTest
 
     def test_check_repository_subversion(self):
-        """Testing Assembla check_repository with Subversion"""
+        """Testing Assembla.check_repository with Subversion"""
         try:
-            account = self._get_hosting_account()
+            account = self.create_hosting_account()
             service = account.service
 
             service.authorize('myuser', 'abc123', None)
@@ -141,6 +122,79 @@ class AssemblaTests(ServiceTests):
                                      local_site_name=None)
 
             self.assertTrue(scmtool.check_repository.called)
-            self.assertNotIn('p4_host', scmtool.check_repository.last_call.kwargs)
+            self.assertNotIn('p4_host',
+                             scmtool.check_repository.last_call.kwargs)
+        except ImportError:
+            raise nose.SkipTest
+
+
+class AssemblaFormTests(AssemblaTestCase):
+    """Unit tests for reviewboard.hostingsvcs.assembla.AssemblaForm."""
+
+    def setUp(self):
+        super(AssemblaFormTests, self).setUp()
+
+        self.account = self.create_hosting_account()
+
+    def test_save_form_perforce(self):
+        """Testing AssemblaForm with Perforce"""
+        try:
+            repository = self.create_repository(hosting_account=self.account,
+                                                tool_name='Perforce')
+
+            form = self.get_form(fields={'assembla_project_id': 'myproject'})
+            self.spy_on(get_hostname,
+                        call_fake=lambda: 'myhost.example.com')
+
+            form.save(repository)
+
+            self.assertIn('use_ticket_auth', repository.extra_data)
+            self.assertTrue(repository.extra_data['use_ticket_auth'])
+            self.assertIn('p4_host', repository.extra_data)
+            self.assertIn('p4_client', repository.extra_data)
+            self.assertEqual(repository.extra_data['p4_host'], 'myproject')
+            self.assertEqual(repository.extra_data['p4_client'],
+                             'myhost.example.com-myproject')
+        except ImportError:
+            raise nose.SkipTest('Perforce support is not installed')
+
+    def test_save_form_perforce_with_portfolio(self):
+        """Testing AssemblaForm with Perforce and Assembla portfolio IDs"""
+        try:
+            repository = self.create_repository(hosting_account=self.account,
+                                                tool_name='Perforce')
+
+            form = self.get_form(fields={
+                'assembla_project_id': 'myportfolio/myproject',
+            })
+            self.spy_on(get_hostname,
+                        call_fake=lambda: 'myhost.example.com')
+
+            form.save(repository)
+
+            self.assertIn('use_ticket_auth', repository.extra_data)
+            self.assertTrue(repository.extra_data['use_ticket_auth'])
+            self.assertIn('p4_host', repository.extra_data)
+            self.assertIn('p4_client', repository.extra_data)
+            self.assertEqual(repository.extra_data['p4_host'],
+                             'myportfolio/myproject')
+            self.assertEqual(repository.extra_data['p4_client'],
+                             'myhost.example.com-myportfolio-myproject')
+        except ImportError:
+            raise nose.SkipTest('Perforce support is not installed')
+
+    def test_save_form_subversion(self):
+        """Testing AssemblaForm with Subversion"""
+        try:
+            repository = self.create_repository(
+                path='https://svn.example.com/',
+                hosting_account=self.account,
+                tool_name='Subversion')
+
+            form = self.get_form(fields={'assembla_project_id': 'myproject'})
+            form.save(repository)
+
+            self.assertNotIn('use_ticket_auth', repository.extra_data)
+            self.assertNotIn('p4_host', repository.extra_data)
         except ImportError:
             raise nose.SkipTest

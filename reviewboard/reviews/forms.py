@@ -4,15 +4,17 @@ import re
 
 from django import forms
 from django.contrib.admin.widgets import FilteredSelectMultiple
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.utils.translation import ugettext_lazy as _
 
+from reviewboard.admin.form_widgets import RelatedUserWidget
 from reviewboard.diffviewer import forms as diffviewer_forms
 from reviewboard.diffviewer.models import DiffSet
 from reviewboard.reviews.models import (DefaultReviewer, Group,
                                         ReviewRequestDraft, Screenshot)
 from reviewboard.scmtools.models import Repository
-from reviewboard.site.validation import validate_review_groups, validate_users
+from reviewboard.site.mixins import LocalSiteAwareModelFormMixin
 
 
 def regex_validator(value):
@@ -23,7 +25,7 @@ def regex_validator(value):
         raise ValidationError(e)
 
 
-class DefaultReviewerForm(forms.ModelForm):
+class DefaultReviewerForm(LocalSiteAwareModelFormMixin, forms.ModelForm):
     name = forms.CharField(
         label=_("Name"),
         max_length=64,
@@ -37,6 +39,16 @@ class DefaultReviewerForm(forms.ModelForm):
         help_text=_('File paths are matched against this regular expression '
                     'to determine if these reviewers should be added.'))
 
+    people = forms.ModelMultipleChoiceField(
+        queryset=User.objects.filter(is_active=True),
+        label=_('Default users'),
+        required=False,
+        widget=RelatedUserWidget(),
+        error_messages={
+            'invalid_choice': _('A user with ID %(value)s was not found.'),
+            'invalid_pk_value': _('"%(pk)s" is an invalid user ID.'),
+        })
+
     repository = forms.ModelMultipleChoiceField(
         label=_('Repositories'),
         required=False,
@@ -44,45 +56,39 @@ class DefaultReviewerForm(forms.ModelForm):
         help_text=_('The list of repositories to specifically match this '
                     'default reviewer for. If left empty, this will match '
                     'all repositories.'),
-        widget=FilteredSelectMultiple(_("Repositories"), False))
-
-    def clean(self):
-        try:
-            validate_users(self, 'people')
-        except ValidationError as e:
-            self._errors['people'] = self.error_class(e.messages)
-
-        try:
-            validate_review_groups(self, 'groups')
-        except ValidationError as e:
-            self._errors['groups'] = self.error_class(e.messages)
-
-        # Now make sure the repositories are valid.
-        local_site = self.cleaned_data['local_site']
-        repositories = self.cleaned_data['repository']
-
-        for repository in repositories:
-            if repository.local_site != local_site:
-                self._errors['repository'] = self.error_class([
-                    _("The repository '%s' doesn't exist on the local site.")
-                    % repository.name,
-                ])
-                break
-
-        return self.cleaned_data
+        widget=FilteredSelectMultiple(_("Repositories"), False),
+        error_messages={
+            'invalid_choice': _('A repository with ID %(value)s was not '
+                                'found.'),
+            'invalid_pk_value': _('"%(pk)s" is an invalid repository ID.'),
+        })
 
     class Meta:
         model = DefaultReviewer
+        error_messages = {
+            'groups': {
+                'invalid_choice': _('A group with ID %(value)s was not '
+                                    'found.'),
+                'invalid_pk_value': _('"%(pk)s" is an invalid group ID.'),
+            },
+        }
+        fields = '__all__'
 
 
-class GroupForm(forms.ModelForm):
-    def clean(self):
-        validate_users(self)
-
-        return self.cleaned_data
+class GroupForm(LocalSiteAwareModelFormMixin, forms.ModelForm):
+    users = forms.ModelMultipleChoiceField(
+        queryset=User.objects.all(),
+        label=_('Users'),
+        required=False,
+        widget=RelatedUserWidget(),
+        error_messages={
+            'invalid_choice': _('A user with ID %(value)s was not found.'),
+            'invalid_pk_value': _('"%(pk)s" is an invalid user ID.'),
+        })
 
     class Meta:
         model = Group
+        fields = '__all__'
 
 
 class UploadDiffForm(diffviewer_forms.UploadDiffForm):
@@ -118,17 +124,8 @@ class UploadDiffForm(diffviewer_forms.UploadDiffForm):
         if not attach_to_history:
             # Set the initial revision to be one newer than the most recent
             # public revision, so we can reference it in the diff viewer.
-            #
-            # TODO: It would be nice to later consolidate this with the logic
-            #       in DiffSet.save.
-            public_diffsets = self.review_request.diffset_history.diffsets
-
-            try:
-                latest_diffset = public_diffsets.latest()
-                diffset.revision = latest_diffset.revision + 1
-            except DiffSet.DoesNotExist:
-                diffset.revision = 1
-
+            diffset.update_revision_from_history(
+                self.review_request.diffset_history)
             diffset.save()
 
         return diffset

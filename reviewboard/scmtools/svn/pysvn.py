@@ -25,6 +25,8 @@ from django.utils.translation import ugettext as _
 from reviewboard.scmtools.core import HEAD, PRE_CREATION
 from reviewboard.scmtools.errors import FileNotFoundError, SCMError
 from reviewboard.scmtools.svn import base, SVNTool
+from reviewboard.scmtools.svn.utils import (collapse_svn_keywords,
+                                            has_expanded_svn_keywords)
 
 
 class Client(base.Client):
@@ -53,19 +55,6 @@ class Client(base.Client):
 
         try:
             normpath = self.normalize_path(path)
-
-            # SVN expects to have URLs escaped. Take care to only
-            # escape the path part of the URL.
-            if self.client.is_url(normpath):
-                pathtuple = urlsplit(normpath)
-                path = pathtuple[2]
-                if isinstance(path, six.text_type):
-                    path = path.encode('utf-8', 'ignore')
-                normpath = urlunsplit((pathtuple[0],
-                                       pathtuple[1],
-                                       quote(path),
-                                       '', ''))
-
             normrev = self._normalize_revision(revision)
             return cb(normpath, normrev)
 
@@ -85,13 +74,15 @@ class Client(base.Client):
     def _get_file_data(self, normpath, normrev):
         data = self.client.cat(normpath, normrev)
 
-        # Find out if this file has any keyword expansion set.
-        # If it does, collapse these keywords. This is because SVN
-        # will return the file expanded to us, which would break patching.
-        keywords = self.client.propget("svn:keywords", normpath, normrev,
-                                       recurse=True)
-        if normpath in keywords:
-            data = self.collapse_keywords(data, keywords[normpath])
+        if has_expanded_svn_keywords(data):
+            # Find out if this file has any keyword expansion set.
+            # If it does, collapse these keywords. This is because SVN
+            # will return the file expanded to us, which would break patching.
+            keywords = self.client.propget("svn:keywords", normpath, normrev,
+                                           recurse=True)
+
+            if normpath in keywords:
+                data = collapse_svn_keywords(data, keywords[normpath])
 
         return data
 

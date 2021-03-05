@@ -1,17 +1,19 @@
 {% extends "notifications/email_base.html" %}
-{% load djblets_email djblets_utils markdown_email rb_extensions %}
+{% load djblets_email djblets_extensions djblets_utils %}
+{% load markdown_email rb_extensions %}
 
 {% block content %}
 {% if review.ship_it %}
 <p>
 {%  if has_issues %}
-Fix it, then Ship it!
+{{review.FIX_IT_THEN_SHIP_IT_TEXT}}
 {%  else %}
-Ship it!
+{{review.SHIP_IT_TEXT}}
 {%  endif %}
 </p>
 {% endif %}
 
+{% template_hook_point "review-email-html-summary" %}
 {% if review.body_top %}
  <pre style="{{precss}}">{{review.body_top|markdown_email_html:review.body_top_rich_text}}</pre>
  <br />
@@ -20,10 +22,10 @@ Ship it!
 {% for comment in review.screenshot_comments.all %}
 <table bgcolor="#f0f0f0" cellpadding="5" cellspacing="5" style="border: 1px solid #c0c0c0; margin-bottom: 10px">
  <tr>
-  <td><a href="{{domain_method}}://{{domain}}{{comment.screenshot.get_absolute_url}}" style="color: black; font-weight: bold; font-size: 9pt;">{{comment.screenshot.image.name|basename}}</a></td>
+  <td><a href="{{site_url}}{{comment.screenshot.get_absolute_url}}" style="color: black; font-weight: bold; font-size: 9pt;">{{comment.screenshot.image.name|basename}}</a></td>
  </tr>
  <tr>
-  <td><a href="{{domain_method}}://{{domain}}{{comment.screenshot.get_absolute_url}}"><img src="{{domain_method}}://{{domain}}{{comment.get_image_url}}" style="border: 1px black solid;" alt="{{comment.screenshot.caption}}"></a></td>
+  <td><a href="{{site_url}}{{comment.screenshot.get_absolute_url}}"><img src="{{site_url}}{{comment.get_image_url}}" style="border: 1px black solid;" alt="{{comment.screenshot.caption}}"></a></td>
  </tr>
 </table>
 <div style="margin-left: 2em;">
@@ -37,7 +39,7 @@ Ship it!
 <table bgcolor="#f0f0f0" cellpadding="5" cellspacing="5" style="border: 1px solid #c0c0c0; margin-bottom: 10px">
  <tr>
   <td>
-   <a href="{{domain_method}}://{{domain}}{{comment.get_absolute_url}}" style="color: black; font-weight: bold; font-size: 9pt;">{{comment.get_link_text}}</a>
+   <a href="{{site_url}}{{comment.get_absolute_url}}" style="color: black; font-weight: bold; font-size: 9pt;">{{comment.get_link_text}}</a>
 {% if comment.file_attachment.caption %}
    <p>{{comment.file_attachment.caption}}</p>
 {% endif %}
@@ -49,6 +51,14 @@ Ship it!
   </td>
  </tr>
 </table>
+<div style="margin-left: 2em;">
+{%  comment_detail_display_hook comment "html-email" %}
+ <pre style="{{precss}}">{{comment.text|markdown_email_html:comment.rich_text}}</pre>
+</div>
+<br />
+{% endfor %}
+
+{% for comment in review.general_comments.all %}
 <div style="margin-left: 2em;">
 {%  comment_detail_display_hook comment "html-email" %}
  <pre style="{{precss}}">{{comment.text|markdown_email_html:comment.rich_text}}</pre>

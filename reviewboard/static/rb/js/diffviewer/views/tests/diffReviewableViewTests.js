@@ -380,7 +380,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
 
                         $('<a class="commentflag" />')
                             .click(onClick)
-                            .appendTo(cell);
+                            .appendTo(startCell);
 
                         selector._onMouseOver({
                             target: startCell
@@ -568,9 +568,11 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
         beforeEach(function() {
             model = new RB.DiffReviewable({
                 reviewRequest: reviewRequest,
-                fileIndex: 1,
                 fileDiffID: 10,
-                revision: 1
+                revision: 1,
+                file: new RB.DiffFile({
+                    index: 1
+                })
             });
         });
 
@@ -612,7 +614,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
 
                     expect(model.getRenderedDiffFragment).toHaveBeenCalled();
 
-                    options = model.getRenderedDiffFragment.calls[0].args[0];
+                    options = model.getRenderedDiffFragment.calls.argsFor(0)[0];
                     expect(options.chunkIndex).toBe(1);
                     expect(options.linesOfContext).toBe(undefined);
                 });
@@ -624,7 +626,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
 
                     expect(model.getRenderedDiffFragment).toHaveBeenCalled();
 
-                    options = model.getRenderedDiffFragment.calls[0].args[0];
+                    options = model.getRenderedDiffFragment.calls.argsFor(0)[0];
                     expect(options.chunkIndex).toBe(1);
                     expect(options.linesOfContext).toBe('20,0');
                 });
@@ -636,7 +638,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
 
                     expect(model.getRenderedDiffFragment).toHaveBeenCalled();
 
-                    options = model.getRenderedDiffFragment.calls[0].args[0];
+                    options = model.getRenderedDiffFragment.calls.argsFor(0)[0];
                     expect(options.chunkIndex).toBe(1);
                     expect(options.linesOfContext).toBe('0,20');
                 });
@@ -648,7 +650,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
 
                     expect(model.getRenderedDiffFragment).toHaveBeenCalled();
 
-                    options = model.getRenderedDiffFragment.calls[0].args[0];
+                    options = model.getRenderedDiffFragment.calls.argsFor(0)[0];
                     expect(options.chunkIndex).toBe(1);
                     expect(options.linesOfContext).toBe('0,7');
                 });
@@ -659,7 +661,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                     var $tbodies;
 
                     spyOn(model, 'getRenderedDiffFragment')
-                        .andCallFake(function(options, callbacks, context) {
+                        .and.callFake(function(options, callbacks, context) {
                             callbacks.success.call(context, [
                                 '<tbody class="equal tests-new-chunk">',
                                 ' <tr line="6">',
@@ -677,7 +679,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                                 '</tbody>'
                             ].join(''));
                         });
-                    spyOn(view, 'trigger').andCallThrough();
+                    spyOn(view, 'trigger').and.callThrough();
 
                     view.$('.tests-expand-chunk').click();
 
@@ -690,7 +692,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                     expect($($tbodies[1]).hasClass('tests-new-chunk'))
                         .toBe(true);
                     expect($($tbodies[2]).hasClass('delete')).toBe(true);
-                    expect(view._$collapseButtons.length).toBe(1);
+                    expect(view._centered._elements.size).toBe(1);
 
                     expect(view.trigger).toHaveBeenCalledWith(
                         'chunkExpansionChanged');
@@ -700,7 +702,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                     var $tbodies;
 
                     spyOn(model, 'getRenderedDiffFragment')
-                        .andCallFake(function(options, callbacks, context) {
+                        .and.callFake(function(options, callbacks, context) {
                             callbacks.success.call(context, [
                                 '<tbody class="equal tests-new-chunk">',
                                 ' <tr line="6">',
@@ -718,7 +720,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                                 '</tbody>'
                             ].join(''));
                         });
-                    spyOn(view, 'trigger').andCallThrough();
+                    spyOn(view, 'trigger').and.callThrough();
 
                     /*
                      * Simulate having a couple nearby partially expanded
@@ -743,7 +745,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                     expect($($tbodies[1]).hasClass('tests-new-chunk'))
                         .toBe(true);
                     expect($($tbodies[2]).hasClass('delete')).toBe(true);
-                    expect(view._$collapseButtons.length).toBe(1);
+                    expect(view._centered._elements.size).toBe(1);
 
                     expect(view.trigger).toHaveBeenCalledWith(
                         'chunkExpansionChanged');
@@ -792,7 +794,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
 
                 expect(model.getRenderedDiffFragment).toHaveBeenCalled();
 
-                options = model.getRenderedDiffFragment.calls[0].args[0];
+                options = model.getRenderedDiffFragment.calls.argsFor(0)[0];
                 expect(options.chunkIndex).toBe(1);
                 expect(options.linesOfContext).toBe(0);
             });
@@ -802,7 +804,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                     var $tbodies;
 
                     spyOn(model, 'getRenderedDiffFragment')
-                        .andCallFake(function(options, callbacks, context) {
+                        .and.callFake(function(options, callbacks, context) {
                             callbacks.success.call(context, [
                                 '<tbody class="equal tests-new-chunk">',
                                 ' <tr line="6">',
@@ -814,7 +816,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                                 '</tbody>'
                             ].join(''));
                         });
-                    spyOn(view, 'trigger').andCallThrough();
+                    spyOn(view, 'trigger').and.callThrough();
 
                     $collapseButton.click();
 
@@ -827,7 +829,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                     expect($($tbodies[1]).hasClass('tests-new-chunk'))
                         .toBe(true);
                     expect($($tbodies[2]).hasClass('delete')).toBe(true);
-                    expect(view._$collapseButtons.length).toBe(0);
+                    expect(view._centered._elements.size).toBe(0);
 
                     expect(view.trigger).toHaveBeenCalledWith(
                         'chunkExpansionChanged');
@@ -837,7 +839,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                     var $tbodies;
 
                     spyOn(model, 'getRenderedDiffFragment')
-                        .andCallFake(function(options, callbacks, context) {
+                        .and.callFake(function(options, callbacks, context) {
                             callbacks.success.call(context, [
                                 '<tbody class="equal tests-new-chunk">',
                                 ' <tr line="6">',
@@ -849,7 +851,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                                 '</tbody>'
                             ].join(''));
                         });
-                    spyOn(view, 'trigger').andCallThrough();
+                    spyOn(view, 'trigger').and.callThrough();
 
                     /*
                      * Simulate having a couple nearby partially expanded
@@ -872,7 +874,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                     expect($($tbodies[1]).hasClass('tests-new-chunk'))
                         .toBe(true);
                     expect($($tbodies[2]).hasClass('delete')).toBe(true);
-                    expect(view._$collapseButtons.length).toBe(0);
+                    expect(view._centered._elements.size).toBe(0);
 
                     expect(view.trigger).toHaveBeenCalledWith(
                         'chunkExpansionChanged');
@@ -980,7 +982,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                 diffFragmentHTML = expandedDiffFragmentHTML;
 
                 spyOn(view.model, 'getRenderedDiffFragment')
-                    .andCallFake(function(options, callbacks, context) {
+                    .and.callFake(function(options, callbacks, context) {
                         callbacks.success.call(context, diffFragmentHTML);
                     });
 
@@ -1114,6 +1116,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                         $whitespaceChunk = $('<tbody/>')
                             .addClass('whitespace-file')
                             .hide()
+                            .html('<tr><td></td></tr>')
                             .appendTo(view.$el);
 
                     expect($whitespaceChunk.is(':visible')).toBe(false);
@@ -1160,6 +1163,7 @@ suite('rb/diffviewer/views/DiffReviewableView', function() {
                     var $tbodies = view.$el.children('tbody'),
                         $whitespaceChunk = $('<tbody/>')
                             .addClass('whitespace-file')
+                            .html('<tr><td></td></tr>')
                             .hide()
                             .appendTo(view.$el);
 

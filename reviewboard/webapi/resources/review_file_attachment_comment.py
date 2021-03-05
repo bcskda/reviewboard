@@ -49,8 +49,8 @@ class ReviewFileAttachmentCommentResource(BaseFileAttachmentCommentResource):
             'diff_against_file_attachment_id': {
                 'type': int,
                 'description': 'The ID of the file attachment that '
-                               'file_attachment_id is diffed. The comment '
-                               'applies to the diff between these two '
+                               '``file_attachment_id`` is diffed against. The '
+                               'comment applies to the diff between these two '
                                'attachments.',
                 'added_in': '2.0',
             },
@@ -63,6 +63,9 @@ class ReviewFileAttachmentCommentResource(BaseFileAttachmentCommentResource):
 
         This will create a new comment on a file as part of a review.
         The comment contains text only.
+
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         try:
             review_request = \
@@ -102,17 +105,13 @@ class ReviewFileAttachmentCommentResource(BaseFileAttachmentCommentResource):
                     }
                 }
 
-        new_comment = self.create_comment(
+        return self.create_comment(
             review=review,
+            comments_m2m=review.file_attachment_comments,
             file_attachment=file_attachment,
             diff_against_file_attachment=diff_against_file_attachment,
             fields=('file_attachment', 'diff_against_file_attachment'),
             **kwargs)
-        review.file_attachment_comments.add(new_comment)
-
-        return 201, {
-            self.item_result_key: new_comment,
-        }
 
     @webapi_check_local_site
     @webapi_login_required
@@ -126,6 +125,9 @@ class ReviewFileAttachmentCommentResource(BaseFileAttachmentCommentResource):
 
         This can update the text or region of an existing comment. It
         can only be done for comments that are part of a draft review.
+
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         try:
             resources.review_request.get_object(request, *args, **kwargs)
@@ -134,18 +136,10 @@ class ReviewFileAttachmentCommentResource(BaseFileAttachmentCommentResource):
         except ObjectDoesNotExist:
             return DOES_NOT_EXIST
 
-        # Determine whether or not we're updating the issue status.
-        if self.should_update_issue_status(file_comment, **kwargs):
-            return self.update_issue_status(request, self, *args, **kwargs)
-
-        if not resources.review.has_modify_permissions(request, review):
-            return self.get_no_access_error(request)
-
-        self.update_comment(file_comment, **kwargs)
-
-        return 200, {
-            self.item_result_key: file_comment,
-        }
+        return self.update_comment(request=request,
+                                   review=review,
+                                   comment=file_comment,
+                                   **kwargs)
 
     @augment_method_from(BaseFileAttachmentCommentResource)
     def delete(self, *args, **kwargs):

@@ -9,7 +9,26 @@ to make sure you don't break anything. It is important that you run
 these before posting code for review. We also request that new code
 include additions to the unit tests.
 
-You can run the test suite for any of our modules by typing::
+There are two types of tests that can be run: Python and JavaScript.
+
+
+Running JavaScript Unit Tests
+-----------------------------
+
+To run the JavaScript tests, first launch the development web server.
+Instructions on how to do so can be found in the :ref:`getting-started`
+guide, under :ref:`development-web-server`. Once you have launched the
+server, browse to::
+
+    http://localhost:8080/js-tests/
+
+The full JavaScript test suite should then run automatically.
+
+
+Running Python Unit Tests
+-------------------------
+
+You can run the test suite for any of our Python modules by typing::
 
     $ ./tests/runtests.py
 
@@ -18,7 +37,7 @@ tests, etc. See the sections below.
 
 We use nose_ to run our test suites, which will be installed if you followed
 our :ref:`getting-started` guide. You can refer to their `usage guide
-<nose-usage>`_ for additional options not covered here.
+<nose-usage_>`_ for additional options not covered here.
 
 If you're updating the unit tests, you may want to see the
 :ref:`unit-test-fixtures` documentation.
@@ -40,11 +59,11 @@ To run only the tests in a specific module::
 
 To run the tests in a specific class::
 
-    $ ./tests/runtests.py reviewboard.scmtools.tests:GitTests
+    $ ./tests/runtests.py — reviewboard.scmtools.tests.test_git:GitTests
 
 To run only a specific test case::
 
-    $ ./tests/runtests.py reviewboard.scmtools.tests:GitTests.test_get_file
+    $ ./tests/runtests.py — reviewboard.scmtools.tests.test_git:GitTests.test_get_file
 
 
 Working With Failed Tests

@@ -1,0 +1,81 @@
+{% extends "reviews/entries/base.html" %}
+{% load i18n reviewtags %}
+
+
+{% block entry_classes %}changedesc has-avatar{% endblock %}
+
+
+{% block entry_title %}{% trans "Review request changed" %}{% endblock %}
+{% block entry_new_label %}{% trans "New review request update" %}{% endblock %}
+
+
+{% block entry_content %}
+{%  with changedesc=entry.changedesc %}
+<div class="changed-fields">
+{%   if entry.new_status %}
+ <h3 class="status">
+  {% trans "Status:" %}
+  <span class="value">
+{%   if entry.new_status == 'submitted' %}
+  {% trans "Closed (submitted)" %}
+{%   elif entry.new_status == 'discarded' %}
+  {% trans "Discarded" %}
+{%   elif entry.new_status == 'pending' %}
+  {% trans "Re-opened" %}
+{%   endif %}
+  </span>
+ </h3>
+{%   endif %}
+
+{%   if changedesc.text %}
+ <h3>{% trans "Change Summary:" %}</h3>
+ <pre class="changedesc-text {% rich_text_classname changedesc.rich_text %}">{{changedesc.text|render_markdown:changedesc.rich_text}}</pre>
+{%   endif %}
+
+{%   for group in entry.fields_changed_groups %}
+{%    if group.inline %}
+ <table class="secondary-fields">
+{%     for fieldinfo in group.fields %}
+{%      if fieldinfo.rendered_html %}
+  <tr>
+   <th><h3>{{fieldinfo.title}}:</h3></th>
+   <td>
+    {{fieldinfo.rendered_html}}
+   </td>
+  </tr>
+{%      endif %}
+{%     endfor %}
+ </table>
+{%    else %}
+ <ul class="primary-fields">
+{%     for fieldinfo in group.fields %}
+{%      if fieldinfo.rendered_html %}
+  <li class="clearfix">
+   <h3>{{fieldinfo.title}}:</h3>
+   {{fieldinfo.rendered_html}}
+  </li>
+{%      endif %}
+{%     endfor %}
+ </ul>
+{%    endif %}
+{%   endfor %}
+</div>
+
+{%   if entry.status_updates %}
+<div class="changedesc-status-updates">
+ <section class="status-update-summary">
+  <h3 class="status-update-review-header {{entry.state_summary_class}}">{% trans "Checks run" %} ({{entry.state_summary}})</h3>
+
+{%    for update in entry.status_updates %}
+  {{update.summary_html}}
+{%    endfor %}
+ </section>
+
+{%    for update in entry.status_updates %}
+{%     include "reviews/entries/_status_update_review_section.html" %}
+{%    endfor %}
+</div>
+{%   endif %}
+
+{%  endwith %}
+{% endblock entry_content %}

@@ -1,0 +1,334 @@
+@import (reference) "../defs.less";
+
+
+/****************************************************************************
+ * Shared rules for all infoboxes
+ ****************************************************************************/
+
+.infobox {
+  background: @infobox-bg-color;
+  border: 1px @infobox-border-color solid;
+  border-radius: @infobox-border-radius;
+  box-shadow: 0px 0px 4px rgba(0, 0, 0, 0.5);
+  display: block;
+  font-size: 12px;
+  overflow: hidden;
+  position: absolute;
+  min-width: 40em;
+  max-width: 50em;
+  min-height: 10em;
+  z-index: @z-index-dialog;
+
+  a {
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  h2,
+  .infobox-header-text {
+    color: inherit;
+    font-size: @infobox-header-font-size;
+    font-weight: bold;
+    margin: 0 0 0.5em 0;
+    padding: 0;
+    vertical-align: top;
+
+    a {
+      color: inherit;
+    }
+  }
+
+  p {
+    margin: 0.5em 0;
+    padding: 0;
+  }
+}
+
+.infobox-extra {
+  box-sizing: border-box;
+  padding: 0.5em;
+  width: 100%;
+}
+
+.infobox-hover-item,
+.infobox-item {
+  margin: 0.5em 0;
+
+  .fa {
+    min-width: @infobox-item-small-icon-size;
+    text-align: right;
+  }
+}
+
+.infobox-hover-item {
+  position: relative;
+
+  &.infobox-hover-item-anchor-has-small-icon .infobox-hover-item-content {
+    // The 4px covers whitespace between the icon and text.
+    @padding: @infobox-hover-item-content-padding-horiz +
+              @infobox-item-small-icon-size + 4px;
+
+    padding-left: @padding;
+    padding-right: @padding;
+  }
+
+  &.infobox-hover-item-opened {
+    .infobox-hover-item-content,
+    .infobox-hover-item-anchor {
+      z-index: @z-index-dialog + 1;
+    }
+
+    .infobox-hover-item-content {
+      display: block;
+    }
+  }
+}
+
+.infobox-hover-item-content {
+  border: 1px solid #666;
+  background-color: white;
+  display: none;
+  margin: -@infobox-hover-item-content-padding-vert 0 0
+          -@infobox-hover-item-content-padding-horiz;
+  padding: (@infobox-hover-item-content-offset-top +
+            @infobox-hover-item-content-padding-vert)
+           @infobox-hover-item-content-padding-horiz
+           @infobox-hover-item-content-padding-vert
+           @infobox-hover-item-content-padding-horiz;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.infobox-hover-item-anchor {
+  cursor: pointer;
+  position: relative;
+
+  label {
+    border-bottom: 1px dotted #666;
+  }
+}
+
+.infobox-links {
+  a {
+    color: @link-color;
+    margin-right: 2em;
+  }
+}
+
+.infobox-pic {
+  display: inline-block;
+  vertical-align: top;
+
+  img {
+    border-radius: @infobox-inner-border-radius 0
+                   0 @infobox-inner-border-radius;
+  }
+}
+
+.infobox-scrollable-section {
+  padding-left: 20px;
+  position: relative;
+
+  &:after {
+    content: "";
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 2em;
+    background: linear-gradient(to bottom, fade(@infobox-bg-color, 0%),
+                                fade(@infobox-bg-color, 60%) 100%);
+  }
+
+  &:hover {
+    &:after {
+      display: none;
+    }
+
+    .infobox-scrollable-section-content {
+      overflow-y: scroll;
+    }
+  }
+
+  .infobox-scrollable-section-content {
+    max-height: 8em;
+    overflow: hidden;
+  }
+}
+
+.infobox-small-detail {
+  font-size: 10px;
+}
+
+.infobox-text {
+  box-sizing: border-box;
+  display: inline-block;
+  padding: @infobox-padding;
+  position: relative;
+  vertical-align: top;
+  width: 100%;
+  word-wrap: break-word;
+}
+
+.infobox-text-section {
+  margin-top: (2 * @infobox-padding);
+
+  > pre {
+    font-size: 12px;
+    white-space: pre-wrap;
+  }
+}
+
+
+/****************************************************************************
+ * User infobox
+ ****************************************************************************/
+
+.user-infobox {
+  min-height: @user-infobox-avatar-size;
+
+  .infobox-pic {
+    height: @user-infobox-avatar-size;
+    width: @user-infobox-avatar-size;
+  }
+
+  /*
+   * If there's extra content provided by extensions, the avatar image should
+   * have a flat bottom. If not, round the bottom-left as well as the top-left.
+   */
+  .has-extra-content .infobox-pic img {
+    border-radius: @infobox-inner-border-radius 0 0 0;
+  }
+
+  .infobox-extra {
+    border-top: 1px solid #666;
+  }
+
+  .infobox-text {
+    min-height: @user-infobox-avatar-size;
+    min-width: 20em;
+    max-width: 40em;
+    width: auto;
+
+    .infobox-links {
+      position: absolute;
+      bottom: @infobox-padding;
+    }
+  }
+
+  h2 .username {
+    color: #888888;
+    font-size: 12px;
+    font-weight: normal;
+  }
+}
+
+
+/****************************************************************************
+ * Bug infobox
+ ****************************************************************************/
+
+.bug-infobox {
+  .bug-infobox-id {
+    float: right;
+
+    a {
+      color: #888;
+      font-size: 90%;
+      font-weight: normal;
+    }
+  }
+}
+
+
+/****************************************************************************
+ * Review Request infobox
+ ****************************************************************************/
+
+.review-request-infobox {
+  .infobox-pic {
+    border-radius: 0;
+    vertical-align: middle;
+  }
+
+  .review-request-infobox-header {
+    margin-bottom: 1em;
+  }
+
+  .review-request-infobox-id {
+    float: right;
+
+    a {
+      color: #888;
+      font-size: 90%;
+      font-weight: normal;
+    }
+  }
+
+  .review-request-infobox-label-draft {
+    .review-request-label(@summary-label-draft-bg,
+                          @summary-label-draft-border-color,
+                          @summary-label-text-color)
+  }
+
+  .review-request-infobox-label-submitted {
+    .review-request-label(@summary-label-submitted-bg,
+                          @summary-label-submitted-border-color,
+                          @summary-label-submitted-text-color)
+  }
+
+  .review-request-infobox-label-discarded {
+    .review-request-label(@summary-label-discarded-bg,
+                          @summary-label-discarded-border-color,
+                          @summary-label-discarded-text-color)
+  }
+
+  .review-request-infobox-review-summary {
+    background: #F0F0F0;
+    border-top: 1px #CCC solid;
+    border-radius: 0 0 @infobox-inner-border-radius
+                   @infobox-inner-border-radius;
+    margin-left: -@infobox-padding;
+    margin-right: -@infobox-padding;
+    margin-bottom: -@infobox-padding;
+    padding: @infobox-padding;
+
+    &.has-ship-its {
+      background: #bcf592;
+      border-color: #8fd051;
+    }
+
+    &.has-issues {
+      background: @issue-opened-bg;
+      border-color: @issue-opened-border-color;
+    }
+
+    a {
+      color: @link-color;
+    }
+
+    ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      vertical-align: bottom;
+    }
+
+    li {
+      display: inline-block;
+      padding-left: 1.5em;
+
+      &:first-child {
+        padding-left: 0;
+      }
+
+      .rb-icon {
+        vertical-align: text-top;
+      }
+    }
+  }
+}

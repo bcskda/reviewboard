@@ -20,10 +20,17 @@ body.datagrid-page {
         clear: both;
       }
 
-      .datagrid td.bugs a {
-        text-decoration: underline;
-        color: @link-color;
-	white-space: nowrap;
+      .datagrid td.bugs {
+        cursor: text;
+
+        a.bug {
+          text-decoration: underline;
+          color: @link-color;
+        }
+
+        .bug {
+          white-space: nowrap;
+        }
       }
 
       .datagrid-body-container {
@@ -119,9 +126,9 @@ body.datagrid-page {
         background: @datagrid-actions-bg;
         border: 1px @datagrid-border-color solid;
         border-right: 0;
-        .border-radius(@box-inner-border-radius 0 0 @box-inner-border-radius);
-        .box-shadow(@box-shadow);
-        .box-sizing(border-box);
+        border-radius: @box-inner-border-radius 0 0 @box-inner-border-radius;
+        box-shadow: @box-shadow;
+        box-sizing: border-box;
         color: #555;
         position: absolute;
         left: @datagrid-actions-offset-left;
@@ -161,7 +168,7 @@ body.datagrid-page {
         .datagrid-actions-content {
           padding: 8px;
           width: @page-sidebar-width - @datagrid-actions-offset-left;
-          .box-sizing(border-box);
+          box-sizing: border-box;
         }
       }
     }
@@ -174,7 +181,7 @@ body.datagrid-page {
     .datagrid-body .datagrid-headers {
       background: @datagrid-header-bg;
       border-bottom: 1px @datagrid-border-color solid;
-      .border-radius(@box-border-radius @box-border-radius 0 0);
+      border-radius: @box-border-radius @box-border-radius 0 0;
     }
 
     .datagrid-headers {
@@ -192,13 +199,17 @@ body.datagrid-page {
       &:last-child {
         border-top-right-radius: @box-border-radius;
       }
+
+      .rb-icon-datagrid-column-shipits-issues {
+        margin-left: 4px;
+      }
     }
 
     .datagrid-main {
       border: 1px @datagrid-border-color solid;
-      .border-radius(@box-border-radius);
-      .box-shadow(@box-shadow);
-      .box-sizing(border-box);
+      border-radius: @box-border-radius;
+      box-shadow: @box-shadow;
+      box-sizing: border-box;
       overflow: hidden;
       z-index: @z-index-base;
     }
@@ -352,8 +363,8 @@ body.datagrid-page {
               .datagrid-filters-menu {
                 background: @datagrid-filter-menu-bg;
                 border-color: @datagrid-filter-menu-border-color;
-                .border-radius(@box-border-radius @box-border-radius 0 0);
-                .transition(0.1s border-color linear, 0.1s background linear;);
+                border-radius: @box-border-radius @box-border-radius 0 0;
+                transition: 0.1s border-color linear, 0.1s background linear;
                 z-index: (@z-index-menu + 1);
               }
             }
@@ -361,15 +372,15 @@ body.datagrid-page {
             .datagrid-filters {
               background: @datagrid-filter-menu-bg;
               border: 1px @datagrid-filter-menu-border-color solid;
-              .border-radius(@box-border-radius 0 @box-border-radius
-                             @box-border-radius);
+              border-radius: @box-border-radius 0 @box-border-radius
+                             @box-border-radius;
               opacity: 0;
               position: absolute;
               right: 0;
               top: @filter-menu-size;
+              transition: 0.1s opacity linear;
               visibility: hidden;
               z-index: @z-index-menu;
-              .transition(0.1s opacity linear);
 
               li {
                 white-space: nowrap;
@@ -391,8 +402,8 @@ body.datagrid-page {
 
       .paginator {
         background: @datagrid-paginator-bg;
+        border-radius: 0 0 @box-border-radius @box-border-radius;
         border-top: 1px @datagrid-paginator-border-color solid;
-        .border-radius(0 0 @box-border-radius @box-border-radius);
         padding: 0 0 0 1em;
 
         a:hover {
@@ -473,10 +484,6 @@ body.datagrid-page {
     background-color: #beedbc;
     border: 1px #8bbd5c solid !important;
     white-space: nowrap;
-
-    &:hover {
-      background-color: #a1cb9f;
-    }
   }
 
   tr.even .age1 {
@@ -487,10 +494,6 @@ body.datagrid-page {
     background-color: #ddfa8e;
     border: 1px #a3e266 solid !important;
     white-space: nowrap;
-
-    &:hover {
-      background-color: #bcd675;
-    }
   }
 
   tr.even .age2 {
@@ -501,10 +504,6 @@ body.datagrid-page {
     background-color: #fdf18c;
     border: 1px #d8c158 solid !important;
     white-space: nowrap;
-
-    &:hover {
-      background-color: #d9ce74;
-    }
   }
 
   tr.even .age3 {
@@ -515,10 +514,6 @@ body.datagrid-page {
     background-color: #fed3a9;
     border: 1px #d49659 solid !important;
     white-space: nowrap;
-
-    &:hover {
-      background-color: #dab38e;
-    }
   }
 
   tr.even .age4 {
@@ -529,10 +524,6 @@ body.datagrid-page {
     background-color: lighten(#fab6b6, 3%);
     border: 1px lighten(#f56363, 10%) solid !important;
     white-space: nowrap;
-
-    &:hover {
-      background-color: #d69999;
-    }
   }
 
   tr.even .age5 {
@@ -555,36 +546,52 @@ body.datagrid-page {
     background-color: #E9E9E9;
   }
 
-  .issue-count,
-  .shipit-count {
+  .issue-count-container,
+  .shipit-count-container {
+    border-radius: 10px;
     display: inline-block;
     font-weight: bold;
-    padding: 0.05em 0.8em;
+    overflow: hidden;
+    vertical-align: bottom;
     white-space: nowrap;
-    .border-radius(10px);
   }
 
-  .issue-count {
+  .issue-count,
+  .issue-verifying-count,
+  .shipit-count {
+    display: inline-block;
+    padding: 0.05em 0.8em;
+    vertical-align: bottom;
+  }
+
+  .issue-count + .issue-verifying-count {
+    padding-left: 0;
+  }
+
+  .issue-count-container {
     border: 1px darken(@issue-opened-bg, 50%) solid;
     color: #205003;
     #gradient > .vertical-three-colors(@issue-opened-bg, @issue-opened-bg, 25%,
                                        darken(@issue-opened-bg, 30%));
 
-    .issue-icon {
-      color: darken(@issue-opened-bg, 60%);
-      display: inline-block;
-      padding: 0 3px 0 1px;
-      text-align: center;
+    .rb-icon-datagrid-open-issues {
+      margin: 2px 3px 2px 0;
+    }
+
+    .rb-icon-datagrid-issue-verifying {
+      margin: 0 3px 0 0;
     }
   }
 
-  .shipit-count {
-    background-image: url("../../images/shipit_bg.png");
-    background-position: top left;
-    background-repeat: repeat-x;
-    background-color: #6bc810;
-    border: 1px #478a06 solid;
-    color: #205003;
+  .shipit-count-container {
+    border: 1px @shipit-border-color solid;
+    color: @shipit-text-color;
+    #gradient > .vertical-three-colors(@shipit-bg, @shipit-bg, 25%,
+                                       darken(@shipit-bg, 8%));
+
+    .rb-icon-datagrid-shipit {
+      margin: 1px 4px 1px 0;
+    }
   }
 
   .repository-column,
@@ -595,11 +602,6 @@ body.datagrid-page {
   .submitter-column {
     padding-top: 0;
     padding-bottom: 0;
-
-    img {
-      .border-radius(50%);
-      vertical-align: middle;
-    }
   }
 
   .summary {
@@ -612,7 +614,7 @@ body.datagrid-page {
     }
 
     label {
-      .border-radius(4px);
+      border-radius: 4px;
       display: inline;
       float: left;
       margin-right: 0.6em;

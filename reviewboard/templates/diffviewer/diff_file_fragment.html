@@ -7,7 +7,7 @@
 {% definevar 'line_fmt' %}
   <tr line="%(linenum_row)s"%(row_class_attr)s>
 {%  if not file.is_new_file %}
-   <th>%(anchor_html)s%(linenum1)s</th>
+   <th%(header_1_class_attr)s>%(anchor_html)s%(linenum1)s</th>
    <td%(cell_1_class_attr)s>
     %(moved_to_html)s
     %(begin_collapse_html)s
@@ -15,7 +15,7 @@
     %(end_collapse_html)s
    </td>
 {%  endif %}
-   <th>%(linenum2)s</th>
+   <th%(header_2_class_attr)s>%(linenum2)s</th>
    <td%(cell_2_class_attr)s>
     %(moved_from_html)s
     <pre>%(line2)s</pre>
@@ -72,6 +72,7 @@
 {%    endif %}
 {%   endif %}
     {{file.depot_filename}}
+    {% if file.is_symlink %}{% trans " (symlink)" %}{% endif %}
   </th>
 {%  else %}
 {%   if not file.is_new_file %}
@@ -81,7 +82,7 @@
 {%   if file.is_new_file %}
     <a name="{{file.index}}" class="file-anchor"></a>
 {%   endif %}
-    {{file.dest_filename}}{% if file.moved %}{% trans " (moved)" %}{% elif file.copied %}{% trans " (copied)" %}{% endif %}</th>
+    {{file.dest_filename}}{% if file.moved %}{% trans " (moved)" %}{% elif file.copied %}{% trans " (copied)" %}{% endif %}{% if file.is_symlink %}{% trans " (symlink)" %}{% endif %}</th>
 {%  endif %}{# file.dest_filename == file.depot_filename #}
   </tr>
   <tr class="revision-row">
@@ -188,20 +189,21 @@
    <td colspan="4">{% trans "This is an empty file." %}</td>
   </tr>
  </tbody>
-{% elif file.deleted %}
+{% elif file.deleted and not show_deleted %}
  <tbody class="deleted">
   <tr>
    <td colspan="4">
 {%  if file.num_changes == 0 %}
 {%   trans "This empty file was deleted. The content cannot be displayed." %}
 {%  else %}
-{%   trans "This file was deleted. The content cannot be displayed." %}
+{%   trans "This file was deleted." %}
+    <a class="show-deleted-content-action" href="#">{% trans "Show content." %}</a>
 {%  endif %}
    </td>
   </tr>
  </tbody>
 {% else %}
-{%  if file.whitespace_only %}
+{%  if file.whitespace_only and not standalone %}
  <tbody class="whitespace-file">
   <tr>
    <td colspan="4">{% trans "This file contains only whitespace changes." %}</td>
@@ -210,7 +212,15 @@
 {%  endif %}
 {%  for chunk in file.chunks %}
 {%   if not chunk.collapsable or not collapseall %}
- <tbody id="chunk{{file.index}}.{{chunk.index}}"{% attr "class" %}{% if chunk.change != "equal" %}{{chunk.change}}{% if chunk.meta.whitespace_chunk%} whitespace-chunk{% endif %}{% else %}{% if chunk.collapsable %} collapsable{% endif %}{% endif %}{% if standalone %} loaded{% endif %}{% endattr %}>
+ <tbody id="chunk{{file.index}}.{{chunk.index}}"{% attr "class" %}
+  {{chunk.change}}
+{%     if chunk.change != "equal" %}
+{%      if chunk.meta.whitespace_chunk %} whitespace-chunk{% endif %}
+{%     else %}
+{%      if chunk.collapsable %} collapsable{% endif %}
+{%     endif %}
+{%     if standalone %} loaded{% endif %}
+{%    endattr %}>
 {%    diff_lines file.index chunk standalone line_fmt anchor_fmt begin_collapse_fmt end_collapse_fmt moved_fmt %}
  </tbody>
 {%   else %}

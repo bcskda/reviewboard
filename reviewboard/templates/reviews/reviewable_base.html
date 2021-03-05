@@ -1,20 +1,43 @@
 {% extends "base.html" %}
-{% load compressed i18n %}
+{% load i18n pipeline %}
 
 {% block extrahead %}
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-{% endblock %}
+
+{# NOTE: These are intentionally not localized. #}
+<meta property="og:title" content="{{social_page_title}}" />
+<meta property="og:description" content="{{social_page_description}}" />
+<meta property="og:url" content="{{social_page_url}}" />
+<meta name="twitter:title" content="{{social_page_title}}" />
+<meta name="twitter:description" content="{{social_page_description}}" />
+<meta name="twitter:url" content="{{social_page_url}}" />
+
+{%  if social_page_image_url %}
+<meta property="og:image" content="{{social_page_image_url}}" />
+<meta name="twitter:image" content="{{social_page_image_url}}" />
+{%  endif %}
+
+{%  if review_request.repository %}
+<meta name="twitter:label1" content="Repository" />
+<meta name="twitter:data1" content="{{review_request.repository.name}}" />
+{%  endif %}
+
+{%  if review_request_details.branch %}
+<meta name="twitter:label2" content="Branch" />
+<meta name="twitter:data2" content="{{review_request_details.branch}}" />
+{%  endif %}
+{% endblock extrahead %}
 
 {% block ie6_csshacks %}
    #review-banner .banner { position: absolute; }
 {% endblock %}
 
 {% block css %}
-{% compressed_css "reviews" %}
+{% stylesheet 'reviews' %}
 {% endblock %}
 
 {% block scripts-post %}
-{%  compressed_js "reviews" %}
+{%  javascript 'reviews' %}
 {% endblock %}
 
 {% block page_class %}reviewable-page{% endblock %}
@@ -23,11 +46,16 @@
 {{block.super}}
 
 {%  block review_banner %}
-<div id="review-banner"{% if not review %} style="display: none;"{% endif %}>
+<div id="review-banner"{% if not review %} class="hidden"{% endif %}>
  <div class="banner">
   <h1>{% trans "You have a pending review." %}</h1>
   <input id="review-banner-edit" type="button" value="{% trans "Edit Review" %}" />
-  <input id="review-banner-publish" type="button" value="{% trans "Publish" %}" />
+  <div id="review-banner-publish-container" class="split-btn">
+   <div class="btn btn-segmented">
+    <div class="btn-segment primary-btn" id="review-banner-publish">{% trans "Publish Review" %}
+    </div><div class="btn-segment drop-down-btn"><span
+     class="rb-icon rb-icon-dropdown-arrow"></span></div></div>
+  </div>
   <input id="review-banner-discard" type="button" value="{% trans "Discard" %}" />
  </div>
 </div>

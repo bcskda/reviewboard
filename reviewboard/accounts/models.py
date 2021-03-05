@@ -2,12 +2,15 @@ from __future__ import unicode_literals
 
 from django.contrib.auth.models import User
 from django.db import models
+from django.db.models import Q
+from django.db.models.signals import m2m_changed
 from django.dispatch import receiver
 from django.utils import timezone
 from django.utils.encoding import python_2_unicode_compatible
 from django.utils.functional import cached_property
 from django.utils.translation import ugettext_lazy as _
 from djblets.auth.signals import user_registered
+from djblets.cache.backend import cache_memoize
 from djblets.db.fields import CounterField, JSONField
 from djblets.forms.fields import TIMEZONE_CHOICES
 from djblets.siteconfig.models import SiteConfiguration
@@ -15,7 +18,8 @@ from djblets.siteconfig.models import SiteConfiguration
 from reviewboard.accounts.managers import (ProfileManager,
                                            ReviewRequestVisitManager,
                                            TrophyManager)
-from reviewboard.accounts.trophies import TrophyType
+from reviewboard.accounts.trophies import trophies_registry
+from reviewboard.avatars import avatar_services
 from reviewboard.reviews.models import Group, ReviewRequest
 from reviewboard.reviews.signals import (reply_published,
                                          review_published,
@@ -60,8 +64,11 @@ class ReviewRequestVisit(models.Model):
         return 'Review request visit'
 
     class Meta:
+        db_table = 'accounts_reviewrequestvisit'
         unique_together = ('user', 'review_request')
         index_together = [('user', 'visibility')]
+        verbose_name = _('Review Request Visit')
+        verbose_name_plural = _('Review Request Visits')
 
 
 @python_2_unicode_compatible
@@ -154,6 +161,8 @@ class Profile(models.Model):
     timezone = models.CharField(choices=TIMEZONE_CHOICES, default='UTC',
                                 max_length=30)
 
+    settings = JSONField(null=True, default=dict)
+
     extra_data = JSONField(null=True, default=dict)
 
     objects = ProfileManager()
@@ -173,6 +182,23 @@ class Profile(models.Model):
         else:
             return self.default_use_rich_text
 
+    @property
+    def should_enable_desktop_notifications(self):
+        """Return whether desktop notifications should be used for this user.
+
+        If the user has chosen whether or not to use desktop notifications
+        explicitly, then that choice will be respected. Otherwise, we
+        enable desktop notifications by default.
+
+        Returns:
+            bool:
+                If the user has set whether they wish to recieve desktop
+                notifications, then use their preference. Otherwise, we return
+                ``True``.
+        """
+        return (not self.settings or
+                self.settings.get('enable_desktop_notifications', True))
+
     def star_review_request(self, review_request):
         """Mark a review request as starred.
 
@@ -182,19 +208,11 @@ class Profile(models.Model):
         self.starred_review_requests.add(review_request)
 
         if (review_request.public and
-            (review_request.status == ReviewRequest.PENDING_REVIEW or
-             review_request.status == ReviewRequest.SUBMITTED)):
-            site_profile, is_new = LocalSiteProfile.objects.get_or_create(
-                user=self.user,
-                local_site=review_request.local_site,
-                profile=self)
-
-            if is_new:
-                site_profile.save()
-
+            review_request.status in (ReviewRequest.PENDING_REVIEW,
+                                      ReviewRequest.SUBMITTED)):
+            site_profile = \
+                self.user.get_site_profile(review_request.local_site)
             site_profile.increment_starred_public_request_count()
-
-        self.save()
 
     def unstar_review_request(self, review_request):
         """Mark a review request as unstarred.
@@ -202,25 +220,14 @@ class Profile(models.Model):
         This will mark a review request as starred for this user and
         immediately save to the database.
         """
-        q = self.starred_review_requests.filter(pk=review_request.pk)
-
-        if q.count() > 0:
-            self.starred_review_requests.remove(review_request)
+        self.starred_review_requests.remove(review_request)
 
         if (review_request.public and
-            (review_request.status == ReviewRequest.PENDING_REVIEW or
-             review_request.status == ReviewRequest.SUBMITTED)):
-            site_profile, is_new = LocalSiteProfile.objects.get_or_create(
-                user=self.user,
-                local_site=review_request.local_site,
-                profile=self)
-
-            if is_new:
-                site_profile.save()
-
+            review_request.status in (ReviewRequest.PENDING_REVIEW,
+                                      ReviewRequest.SUBMITTED)):
+            site_profile = \
+                self.user.get_site_profile(review_request.local_site)
             site_profile.decrement_starred_public_request_count()
-
-        self.save()
 
     def star_review_group(self, review_group):
         """Mark a review group as starred.
@@ -228,8 +235,7 @@ class Profile(models.Model):
         This will mark a review group as starred for this user and
         immediately save to the database.
         """
-        if self.starred_groups.filter(pk=review_group.pk).count() == 0:
-            self.starred_groups.add(review_group)
+        self.starred_groups.add(review_group)
 
     def unstar_review_group(self, review_group):
         """Mark a review group as unstarred.
@@ -237,12 +243,69 @@ class Profile(models.Model):
         This will mark a review group as starred for this user and
         immediately save to the database.
         """
-        if self.starred_groups.filter(pk=review_group.pk).count() > 0:
-            self.starred_groups.remove(review_group)
+        self.starred_groups.remove(review_group)
 
     def __str__(self):
         """Return a string used for the admin site listing."""
         return self.user.username
+
+    @property
+    def avatar_service(self):
+        """The avatar service the user has selected.
+
+        Returns:
+            djblets.avatars.services.base.AvatarService:
+            The avatar service.
+        """
+        service_id = self.settings.get('avatars', {}).get('avatar_service_id')
+        return avatar_services.get_or_default(service_id)
+
+    @avatar_service.setter
+    def avatar_service(self, service):
+        """Set the avatar service.
+
+        Args:
+            service (djblets.avatars.services.base.AvatarService):
+                The avatar service.
+        """
+        self.settings.setdefault('avatars', {})['avatar_service_id'] = \
+            service.avatar_service_id
+
+    def get_display_name(self, viewing_user):
+        """Return the name to display to the given user.
+
+        If any of the following is True and the user this profile belongs to
+        has a full name set, the display name will be the the user's full name:
+
+        * The viewing user is authenticated and this profile is public.
+        * The viewing user is the user this profile belongs to.
+        * The viewing user is an administrator.
+        * The viewing user is a LocalSite administrator on any LocalSite for
+          which the user whose this profile belongs to is a user.
+
+        Otherwise the display name will be the user's username.
+
+        Args:
+            viewing_user (django.contrib.auth.models.User):
+                The user who is viewing the profile.
+
+        Returns:
+            unicode:
+            The name to display.
+        """
+        if (viewing_user is not None and
+            viewing_user.is_authenticated() and
+            (not self.is_private or
+             viewing_user.pk == self.user_id or
+             viewing_user.is_admin_for_user(self.user))):
+            return self.user.get_full_name() or self.user.username
+        else:
+            return self.user.username
+
+    class Meta:
+        db_table = 'accounts_profile'
+        verbose_name = _('Profile')
+        verbose_name_plural = _('Profiles')
 
 
 @python_2_unicode_compatible
@@ -292,13 +355,16 @@ class LocalSiteProfile(models.Model):
                 user=None, local_site=p.local_site).count()
             if p.pk else 0))
 
-    class Meta:
-        unique_together = (('user', 'local_site'),
-                           ('profile', 'local_site'))
-
     def __str__(self):
         """Return a string used for the admin site listing."""
         return '%s (%s)' % (self.user.username, self.local_site)
+
+    class Meta:
+        db_table = 'accounts_localsiteprofile'
+        unique_together = (('user', 'local_site'),
+                           ('profile', 'local_site'))
+        verbose_name = _('Local Site Profile')
+        verbose_name_plural = _('Local Site Profiles')
 
 
 class Trophy(models.Model):
@@ -319,12 +385,17 @@ class Trophy(models.Model):
 
     @cached_property
     def trophy_type(self):
-        """Get the TrophyType instance for this trophy."""
-        return TrophyType.for_category(self.category)
+        """The TrophyType instance for this trophy."""
+        return trophies_registry.get_for_category(self.category)
 
     def get_display_text(self):
         """Get the display text for this trophy."""
         return self.trophy_type.get_display_text(self)
+
+    class Meta:
+        db_table = 'accounts_trophy'
+        verbose_name = _('Trophy')
+        verbose_name_plural = _('Trophies')
 
 
 #
@@ -332,27 +403,42 @@ class Trophy(models.Model):
 #
 
 def _is_user_profile_visible(self, user=None):
-    """Get whether or not a User's profile is viewable by a given user.
+    """Return whether or not the given user can view this user's profile.
 
-    A profile is viewable if it's not marked as private, or the viewing
-    user owns the profile, or the user is a staff member.
+    Profiles are hidden from unauthenticated users. For authenticated users, a
+    profile is visible if one of the following is true:
+
+    * The profile is not marked as private.
+    * The viewing user owns the profile.
+    * The viewing user is a staff member.
+    * The viewing user is an administrator on a Local Site which the viewed
+      user is a member.
+
+    Args:
+        user (django.contrib.auth.models.User, optional):
+            The user for which visibility to the profile is to be determined.
+
+    Returns:
+        bool:
+        Whether or not the given user can view the profile.
     """
-    try:
-        if hasattr(self, 'is_private'):
-            # This is an optimization used by the web API. It will set
-            # is_private on this User instance through a query, saving a
-            # lookup for each instance.
-            #
-            # This must be done because select_related() and
-            # prefetch_related() won't cache reverse foreign key relations.
-            is_private = self.is_private
-        else:
-            is_private = self.get_profile().is_private
+    if user is None or user.is_anonymous():
+        return False
 
-        return ((user and (user == self or user.is_staff)) or
-                not is_private)
-    except Profile.DoesNotExist:
-        return True
+    if hasattr(self, 'is_private'):
+        # This is an optimization used by the web API. It will set
+        # is_private on this User instance through a query, saving a
+        # lookup for each instance.
+        #
+        # This must be done because select_related() and
+        # prefetch_related() won't cache reverse foreign key relations.
+        is_private = self.is_private
+    else:
+        is_private = self.get_profile().is_private
+
+    return (not is_private or
+            user == self or
+            user.is_admin_for_user(self))
 
 
 def _should_send_email(self):
@@ -361,10 +447,7 @@ def _should_send_email(self):
     This is patched into the user object to make it easier to deal with missing
     Profile objects.
     """
-    try:
-        return self.get_profile().should_send_email
-    except Profile.DoesNotExist:
-        return True
+    return self.get_profile().should_send_email
 
 
 def _should_send_own_updates(self):
@@ -373,40 +456,197 @@ def _should_send_own_updates(self):
     This is patched into the user object to make it easier to deal with missing
     Profile objects.
     """
-    try:
-        return self.get_profile().should_send_own_updates
-    except Profile.DoesNotExist:
-        return True
+    return self.get_profile().should_send_own_updates
 
 
-def _get_profile(self):
-    """Get the profile for the User.
+def _get_profile(self, cached_only=False, create_if_missing=True,
+                 return_is_new=False):
+    """Return the profile for the User.
 
     The profile will be cached, preventing queries for future lookups.
+
+    If a profile doesn't exist in the database, and a cached-only copy
+    isn't being returned, then a profile will be created in the database.
+
+    Version Changed:
+        3.0.12:
+        Added support for ``create_if_missing`` and ``return_is_new``
+        arguments.
+
+    Args:
+        cached_only (bool, optional):
+            Whether we should only return the profile cached for the user.
+
+            If True, this function will not retrieve an uncached profile or
+            create one that doesn't exist. Instead, it will return ``None``.
+
+        create_if_missing (bool, optional):
+            Whether to create a site profile if one doesn't already exist.
+
+        return_is_new (bool, optional);
+            If ``True``, the result of the call will be a tuple containing
+            the profile and a boolean indicating if the profile was
+            newly-created.
+
+    Returns:
+        Profile or tuple.
+        The user's profile.
+
+        If ``return_is_new`` is ``True``, then this will instead return
+        ``(Profile, is_new)``.
+
+    Raises:
+        Profile.DoesNotExist:
+            The profile did not exist. This can only be raised if passing
+            ``create_if_missing=False``.
     """
-    if not hasattr(self, '_profile'):
-        self._profile = Profile.objects.get(user=self)
-        self._profile.user = self
+    # Note that we use the same cache variable that a select_related() call
+    # would use, ensuring that we benefit from Django's caching when possible.
+    profile = getattr(self, '_profile_set_cache', None)
+    is_new = False
 
-    return self._profile
+    if profile is None and not cached_only:
+        if create_if_missing:
+            profile, is_new = Profile.objects.get_or_create(user=self)
+        else:
+            # This may raise Profile.DoesNotExist.
+            profile = Profile.objects.get(user=self)
+
+        profile.user = self
+        self._profile_set_cache = profile
+
+    # While modern versions of Review Board set this to an empty dictionary,
+    # old versions would initialize this to None. Since we don't want to litter
+    # our code with extra None checks everywhere we use it, normalize it here.
+    if profile is not None and profile.extra_data is None:
+        profile.extra_data = {}
+
+    if return_is_new:
+        return profile, is_new
+
+    return profile
 
 
-def _get_site_profile(self, local_site):
-    """Get the LocalSiteProfile for a given LocalSite for the User.
+def _get_site_profile(self, local_site, cached_only=False,
+                      create_if_missing=True, return_is_new=False):
+    """Return the LocalSiteProfile for a given LocalSite for the User.
 
-    The profile will be cached, preventing queries for future lookups.
+    The site profile will be cached, preventing queries for future lookups.
+
+    If a site profile doesn't exist in the database, and a cached-only copy
+    isn't being returned, then a profile will be created in the database,
+    unless passing ``create_if_missing=False``.
+
+    Version Changed:
+        3.0.12:
+        * In previous versions, this would not create a site profile if one
+          didn't already exist. Now it does, unless passing
+          ``create_if_missing=False``. This change was made to standardize
+          behavior between this and :py:meth:`User.get_profile`.
+
+        * Added support for ``cached_only``, ``create_if_missing`` and
+          ``return_is_new`` arguments.
+
+    Args:
+        local_site (reviewboard.site.models.LocalSite):
+            The LocalSite to return a profile for. This is allowed to be
+            ``None``, which means the profile applies to their global site
+            account.
+
+        cached_only (bool, optional):
+            Whether we should only return the profile cached for the user.
+
+            If True, this function will not retrieve an uncached profile or
+            create one that doesn't exist. Instead, it will return ``None``.
+
+        create_if_missing (bool, optional):
+            Whether to create a site profile if one doesn't already exist.
+
+        return_is_new (bool, optional);
+            If ``True``, the result of the call will be a tuple containing
+            the profile and a boolean indicating if the profile was
+            newly-created.
+
+    Returns:
+        LocalSiteProfile or tuple:
+        The user's LocalSite profile.
+
+        If ``return_is_new`` is ``True``, then this will instead return
+        ``(LocalSiteProfile, is_new)``.
+
+    Raises:
+        LocalSiteProfile.DoesNotExist:
+            The profile did not exist. This can only be raised if passing
+            ``create_if_missing=False``.
     """
     if not hasattr(self, '_site_profiles'):
         self._site_profiles = {}
 
-    if local_site.pk not in self._site_profiles:
-        site_profile = \
-            LocalSiteProfile.objects.get(user=self, local_site=local_site)
-        site_profile.user = self
-        site_profile.local_site = local_site
-        self._site_profiles[local_site.pk] = site_profile
+    if local_site is None:
+        local_site_id = None
+    else:
+        local_site_id = local_site.pk
 
-    return self._site_profiles[local_site.pk]
+    is_new = False
+    site_profile = self._site_profiles.get(local_site_id)
+
+    if site_profile is None and not cached_only:
+        profile = self.get_profile()
+
+        if create_if_missing:
+            site_profile, is_new = LocalSiteProfile.objects.get_or_create(
+                user=self,
+                profile=profile,
+                local_site=local_site)
+        else:
+            # This may raise LocalSiteProfile.DoesNotExist.
+            site_profile = LocalSiteProfile.objects.get(
+                user=self,
+                profile=profile,
+                local_site=local_site)
+
+        # Set these directly in order to avoid further lookups.
+        site_profile.user = self
+        site_profile.profile = profile
+        site_profile.local_site = local_site
+
+        self._site_profiles[local_site_id] = site_profile
+
+    if return_is_new:
+        return site_profile, is_new
+
+    return site_profile
+
+
+def _is_admin_for_user(self, user):
+    """Return whether or not this user is an administrator for the given user.
+
+    Results will be cached for this user so that at most one query is done.
+
+    Args:
+        user (django.contrib.auth.models.User):
+            The user to check.
+
+    Returns:
+        bool:
+        Whether or not this user is an administrator for the given user.
+    """
+    if self.is_staff:
+        return True
+
+    if not user or user.is_anonymous():
+        return False
+
+    if not hasattr(self, '_cached_admin_for_users'):
+        self._cached_admin_for_users = cache_memoize(
+            '%s-admin-for-users' % self.pk,
+            lambda: tuple(
+                User.objects
+                .filter(local_site__admins=self)
+                .values_list('pk', flat=True)
+            ))
+
+    return user.pk in self._cached_admin_for_users
 
 
 User.is_profile_visible = _is_user_profile_visible
@@ -414,12 +654,13 @@ User.get_profile = _get_profile
 User.get_site_profile = _get_site_profile
 User.should_send_email = _should_send_email
 User.should_send_own_updates = _should_send_own_updates
+User.is_admin_for_user = _is_admin_for_user
 User._meta.ordering = ('username',)
 
 
 @receiver(review_request_published)
 def _call_compute_trophies(sender, review_request, **kwargs):
-    if review_request.changedescs.count() == 0 and review_request.public:
+    if review_request.public and not review_request.changedescs.exists():
         Trophy.objects.compute_trophies(review_request)
 
 
@@ -456,3 +697,51 @@ def _add_default_groups(sender, user, local_site=None, **kwargs):
 
     for default_group in default_groups:
         default_group.users.add(user)
+
+
+@receiver(m2m_changed, sender=Group.users.through)
+def _on_group_user_membership_changed(instance, action, pk_set, reverse,
+                                      **kwargs):
+    """Handler for when a review group's membership has changed.
+
+    When a user is added to or removed from a review group, their
+    :py:attr:`~LocalSiteProfile.total_incoming_request_count` counter will
+    be cleared, forcing it to be recomputed on next access. This ensures that
+    their incoming count will be correct when group memberships change.
+
+    Args:
+        instance (django.db.models.Model):
+            The instance that was updated. If ``reverse`` is ``True``, then
+            this will be a :py:class:`~django.contrib.auth.models.User`.
+            Otherwise, it will be ignored.
+
+        action (unicode):
+            The membership change action. The incoming count is only cleared
+            if this ``post_add``, ``post_remove``, or ``pre_clear``.
+
+        pk_set (set of int):
+            The user IDs added to the group. If ``reverse`` is ``True``,
+            then this is ignored in favor of ``instance``.
+
+        reverse (bool):
+            Whether this signal is emitted when adding through the forward
+            relation (``True`` -- :py:attr:`Group.users
+            <reviewboard.reviews.models.group.Group.users>`) or the reverse
+            relation (``False`` -- ``User.review_groups``).
+
+        **kwargs (dict):
+            Additional keyword arguments passed to the signal.
+    """
+    if action in ('post_add', 'post_remove', 'pre_clear'):
+        q = None
+
+        if reverse:
+            if instance is not None:
+                q = Q(user=instance)
+        else:
+            if pk_set:
+                q = Q(user__in=pk_set)
+
+        if q is not None:
+            LocalSiteProfile.objects.filter(q).update(
+                total_incoming_request_count=None)

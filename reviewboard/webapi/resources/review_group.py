@@ -11,7 +11,7 @@ from djblets.webapi.errors import (DOES_NOT_EXIST, INVALID_FORM_DATA,
                                    NOT_LOGGED_IN, PERMISSION_DENIED)
 
 from reviewboard.reviews.models import Group
-from reviewboard.webapi.base import WebAPIResource
+from reviewboard.webapi.base import ImportExtraDataError, WebAPIResource
 from reviewboard.webapi.decorators import webapi_check_local_site
 from reviewboard.webapi.errors import (GROUP_ALREADY_EXISTS,
                                        INVALID_USER)
@@ -226,10 +226,8 @@ class ReviewGroupResource(WebAPIResource):
         and display name. The group will be public by default, unless
         specified otherwise.
 
-        Extra data can be stored on the group for later lookup by passing
-        ``extra_data.key_name=value``. The ``key_name`` and ``value`` can
-        be any valid strings. Passing a blank ``value`` will remove the key.
-        The ``extra_data.`` prefix is required.
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         local_site = self._get_local_site(local_site_name)
 
@@ -250,7 +248,11 @@ class ReviewGroupResource(WebAPIResource):
             return GROUP_ALREADY_EXISTS
 
         if extra_fields:
-            self.import_extra_data(group, group.extra_data, extra_fields)
+            try:
+                self.import_extra_data(group, group.extra_data, extra_fields)
+            except ImportExtraDataError as e:
+                return e.error_payload
+
             group.save(update_fields=['extra_data'])
 
         return 201, {
@@ -300,10 +302,8 @@ class ReviewGroupResource(WebAPIResource):
         All the fields of a review group can be modified, including the
         name, so long as it doesn't conflict with another review group.
 
-        Extra data can be stored on the group for later lookup by passing
-        ``extra_data.key_name=value``. The ``key_name`` and ``value`` can
-        be any valid strings. Passing a blank ``value`` will remove the key.
-        The ``extra_data.`` prefix is required.
+        Extra data can be stored later lookup. See
+        :ref:`webapi2.0-extra-data` for more information.
         """
         try:
             group = self.get_object(request, *args, **kwargs)
@@ -319,7 +319,7 @@ class ReviewGroupResource(WebAPIResource):
             local_site = self._get_local_site(kwargs.get('local_site_name'))
 
             if self.model.objects.filter(name=name,
-                                         local_site=local_site).count():
+                                         local_site=local_site).exists():
                 return GROUP_ALREADY_EXISTS
 
             group.name = name
@@ -331,7 +331,10 @@ class ReviewGroupResource(WebAPIResource):
             if val is not None:
                 setattr(group, field, val)
 
-        self.import_extra_data(group, group.extra_data, extra_fields)
+        try:
+            self.import_extra_data(group, group.extra_data, extra_fields)
+        except ImportExtraDataError as e:
+            return e.error_payload
 
         group.save()
 

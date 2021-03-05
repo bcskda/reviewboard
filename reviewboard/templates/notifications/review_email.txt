@@ -1,22 +1,30 @@
-{% autoescape off %}{% load djblets_email djblets_utils markdown_email rb_extensions reviewtags %}
+{% autoescape off %}{% load djblets_email djblets_extensions djblets_utils markdown_email rb_extensions reviewtags %}
 -----------------------------------------------------------
 This is an automatically generated e-mail. To reply, visit:
-{{domain_method}}://{{domain}}{{review.get_absolute_url}}
+{{site_url}}{{review.get_absolute_url}}
 -----------------------------------------------------------
 {% if review.ship_it %}
 {%  if has_issues %}
-Fix it, then Ship it!
+{{review.FIX_IT_THEN_SHIP_IT_TEXT}}
 {%  else %}
-Ship it!
+{{review.SHIP_IT_TEXT}}
 {%  endif %}
 {% endif %}
-
+{% template_hook_point "review-email-text-summary" %}
 {% if review.body_top %}
 {{review.body_top|markdown_email_text:review.body_top_rich_text}}
 {% endif %}{% for comment in review.file_attachment_comments.all %}
 
 File Attachment: {% if comment.file_attachment.caption %}{{comment.file_attachment.caption}} - {% endif %}{{comment.get_link_text}}
-<{{domain_method}}://{{domain}}/{{comment.get_review_url}}>
+<{{site_url}}{{comment.get_review_url}}>
+
+{% filter indent %}{% condense 2 %}
+{%  comment_detail_display_hook comment "text-email" %}
+
+{{comment.text|markdown_email_text:comment.rich_text}}
+{% endcondense %}{% endfilter %}
+
+{% endfor %}{% for comment in review.general_comments.all %}
 
 {% filter indent %}{% condense 2 %}
 {%  comment_detail_display_hook comment "text-email" %}
@@ -27,7 +35,7 @@ File Attachment: {% if comment.file_attachment.caption %}{{comment.file_attachme
 {% endfor %}{% for comment in review.screenshot_comments.all %}
 
 Screenshot: {{ comment.screenshot.caption }}
-<{{domain_method}}://{{domain}}/{{comment.get_review_url}}>
+<{{site_url}}{{comment.get_review_url}}>
 
 {% filter indent %}{% condense 2 %}
 {%  comment_detail_display_hook comment "text-email" %}
@@ -37,8 +45,11 @@ Screenshot: {{ comment.screenshot.caption }}
 
 {% endfor %}{% for entry in comment_entries %}
 
-{{ entry.comment.filediff.source_file_display }} {% patched_file_line_numbers %}
-<{{domain_method}}://{{domain}}{{entry.comment.get_review_url}}>
+{% condense 1 %}
+{{entry.comment.filediff.source_file_display}}
+{% diff_comment_line_numbers entry.chunks entry.comment %}
+<{{site_url}}{{entry.comment.get_review_url}}>
+{% endcondense %}
 
 {% filter indent %}{% condense 2 %}
 {%  comment_detail_display_hook entry.comment "text-email" %}

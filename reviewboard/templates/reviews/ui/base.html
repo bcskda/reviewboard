@@ -13,40 +13,50 @@
 {% block content %}
 {%  definevar "review_ui_box_content" %}{% block review_ui_box_content %}{% endblock %}{% enddefinevar %}
 
-<div id="review_request" class="review-ui-box{% if review_ui_box_content %} has-review-ui-box-content{% endif %}">
-{%  include "reviews/trophy_box.html" %}
- <div id="review_request_banners"></div>
-
-{%  box "review-request" %}
- <div class="review-request-header">
-  <ul class="actions page-tabs">
-   <li><a href="{{review_request.get_absolute_url}}">{% trans "Reviews" %}</a></li>
-   <li class="active"><a href=".">{% trans "File" %}</a></li>
-{%   if has_diffs %}
-   <li><a href="{% url 'view-diff' review_request.display_id %}#index_header">{% trans "Diff" %}</a></li>
-{%   endif %}
-  </ul>
-
-  <div class="actions-container">
-   {% star review_request %}
-   <ul class="actions actions-right-container">
-    <li class="has-menu">
-     <a href="#" class="mobile-actions-menu-label"><span class="fa fa-ellipsis-h fa-lg"></span></a>
-     <ul class="actions actions-right">
-{%   include "reviews/review_request_actions_secondary.html" %}
-{%   if has_diffs %}
-      <li><a href="{% url 'raw-diff' review_request.display_id %}">{% trans "Download Diff" %}</a></li>
-{%   endif %}
-{%   include "reviews/review_request_actions_primary.html" %}
-     </ul>
-    </li>
-   </ul>
+{%  if prev_file_attachment %}
+<div class="review-ui-prev-attachment">
+ <a href="{% url 'file-attachment' review_request_id=review_request.display_id file_attachment_id=prev_file_attachment.pk %}">
+  <div class="file-container">
+   <div class="file">
+    <div class="file-thumbnail-container">
+     <div class="file-thumbnail">{{prev_file_attachment.thumbnail}}</div>
+    </div>
+    <div class="file-caption-container">
+     <div class="file-caption">{{prev_file_attachment.display_name}}</div>
+    </div>
+   </div>
   </div>
+  <span class="fa fa-chevron-left" aria-hidden="true"></span>
+ </a>
+</div>
+{%  endif %}
+
+{%  if next_file_attachment %}
+<div class="review-ui-next-attachment">
+ <a href="{% url 'file-attachment' review_request_id=review_request.display_id file_attachment_id=next_file_attachment.pk %}">
+  <span class="fa fa-chevron-right" aria-hidden="true"></span>
+  <div class="file-container">
+   <div class="file">
+    <div class="file-thumbnail-container">
+     <div class="file-thumbnail">{{next_file_attachment.thumbnail}}</div>
+    </div>
+    <div class="file-caption-container">
+     <div class="file-caption">{{next_file_attachment.display_name}}</div>
+    </div>
+   </div>
+  </div>
+ </a>
+</div>
+{%  endif %}
+
+<div id="review-request" class="review-ui-box{% if review_ui_box_content %} has-review-ui-box-content{% endif %}{% if prev_file_attachment %} has-prev-attachment{% endif %}{% if next_file_attachment %} has-next-attachment{% endif %}">
+{%  include "reviews/trophy_box.html" %}
+ <div id="review-request-banners"></div>
+
+ <div class="review-request">
+{%   include "reviews/review_request_header.html" %}
+  <div class="content review-ui-box-content">{{review_ui_box_content}}</div>
  </div>
- <div class="content review-ui-box-content">
-  {{review_ui_box_content}}
- </div>
-{%  endbox %}
 </div>
 
 <div class="review-ui-standalone">
@@ -59,10 +69,15 @@
 
 <script>
     RB.PageManager.setPage(new RB.ReviewablePageView({
+        el: document.body,
+        model: new RB.ReviewablePage({
 {%  localtime off %}
-        lastActivityTimestamp: {{last_activity_time|json_dumps}},
+            lastActivityTimestamp: {{last_activity_time|json_dumps}},
 {%  endlocaltime %}
-{%  include "reviews/reviewable_page_data.js" %}
+            {% reviewable_page_model_data %}
+        }, {
+            parse: true
+        })
     }));
 </script>
 

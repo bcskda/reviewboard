@@ -1,7 +1,7 @@
 {% autoescape off %}{% load djblets_email djblets_utils markdown_email reviewtags %}
 -----------------------------------------------------------
 This is an automatically generated e-mail. To reply, visit:
-{{domain_method}}://{{domain}}{{review_request.get_absolute_url}}
+{{site_url}}{{review_request.get_absolute_url}}
 -----------------------------------------------------------
 
 {% condense %}
@@ -33,28 +33,27 @@ Changes
 {{review_request.summary}}
 {% endif %}{% endif %}
 
-{% ifnotequal review_request.bugs_closed "" %}
-Bugs: {{ review_request.get_bug_list|humanize_list }}{% ifnotequal review_request.repository.bug_tracker "" %}{% for bug in review_request.get_bug_list %}
-    {{ bug|bug_url:review_request }}{% endfor %}
-{% endifnotequal %}
-{% endifnotequal %}
-
-{% if review_request.repository %}
-Repository: {{review_request.repository.name}}
-{% endif %}
-
 Description{% if changes %}{% if changes.description %} (updated){% endif %}{% endif %}
 -------
 
 {{review_request.description|markdown_email_text:review_request.description_rich_text}}
 
 
+{% with review_request.get_latest_diffset as latest_diffset %}
+{%  if latest_diffset %}
 Diffs{% if changes and changes.diff %} (updated){% endif %}
 -----
-{% for filediff in review_request.diffset_history.diffsets.latest.files.all %}
+{%   for filediff in latest_diffset.files.all %}
   {{ filediff.source_file_display }} {{ filediff.source_revision }} {% endfor %}
 
-Diff: {{domain_method}}://{{domain}}{% url 'view-diff' review_request.display_id %}
+{%   with latest_diffset.revision as rev %}
+Diff: {{site_url}}{% url 'view-diff-revision' review_request.display_id rev %}
+{%    if rev > 1 and changes and changes.diff %}
+Changes: {{site_url}}{% url 'view-interdiff' review_request.display_id rev|add:"-1" rev %}
+{%    endif %}
+{%   endwith %}
+{%  endif %}
+{% endwith %}
 
 
 Testing{% if changes and changes.testing_done %} (updated){% endif %}
@@ -76,9 +75,26 @@ Screenshots{% if changes and changes.screenshots %} (updated){% endif %}
 -----------
 {% for screenshot in review_request.screenshots.all %}
 {{ screenshot.caption }}
-  {{domain_method}}://{{domain}}{{ screenshot.get_absolute_url }}{% endfor %}
+  {{site_url}}{{ screenshot.get_absolute_url }}{% endfor %}
 
 {% endif %}
+{% if review_request.bugs_closed %}
+
+Bugs: {{review_request.get_bug_list|humanize_list}}{% if review_request.repository and review_request.repository.bug_tracker %}{% for bug in review_request.get_bug_list %}
+    {{bug|bug_url:review_request}}{% endfor %}
+{% endif %}
+{% endif %}
+
+{% condense 0%}
+{% if review_request.repository %}
+Repository: {{review_request.repository.name}}
+{% endif %}
+{% endcondense %}
+{% condense 0%}
+{% if review_request.branch %}
+  Branch: {{review_request.branch}}
+{% endif %}
+{% endcondense %}
 
 Thanks,
 

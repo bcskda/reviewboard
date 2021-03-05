@@ -69,6 +69,7 @@ system's package manager:
 
 * gettext
 * git
+* npm
 * patch
 * pysvn
 
@@ -370,6 +371,7 @@ MacOS X uses may want to try `GitX`_.
 Testing Changes
 ===============
 
+.. _development-web-server:
 
 Development Web Server
 ----------------------

@@ -29,7 +29,7 @@
     bottom: 0;
     right: 0;
 
-    input {
+    input, .split-btn {
       margin-left: 10px;
     }
   }
@@ -40,6 +40,7 @@
  ****************************************************************************/
 .editicon {
   margin-left: @edit-icon-margin;
+  text-decoration: none;
 
   .rb-icon {
     vertical-align: bottom;
@@ -53,11 +54,11 @@
 .inline-editor-form,
 .text-editor {
   textarea {
-    border: 1px @textarea-border-color solid;
+    border: @textarea-border;
+    box-sizing: border-box;
     margin: 0;
     outline: none;
-    padding: 10px;
-    .box-sizing(border-box);
+    padding: @textarea-editor-padding;
 
     /*
      * This prevents extra spacing below a text area in different browsers.
@@ -118,6 +119,7 @@
 
 .text-editor {
   margin: @textarea-editor-margin;
+  position: relative;
 
   textarea, .CodeMirror {
     margin: 0;
@@ -221,25 +223,26 @@
 
   input[type="text"],
   input[type="password"],
+  input[type="number"],
   input[type="email"] {
     border: 1px #aaa solid;
+    border-radius: @box-border-radius;
+    box-sizing: border-box;
     font-size: inherit;
     margin: 0;
     padding: 0.5em;
     width: @auth-field-width;
-    .border-radius(@box-border-radius);
-    .box-sizing(border-box);
   }
 
   .auth-button-container {
     width: 16em;
 
-    input {
+    button, input {
       font-size: 120%;
       margin: 0;
       padding: 0.6em;
       width: 100%;
-      .box-sizing(border-box);
+      box-sizing: border-box;
     }
   }
 
@@ -248,7 +251,7 @@
     margin: 1.5em 0;
     padding-left: @auth-label-width;
 
-    &.auth-field-row {
+    &.auth-field-row:not(.checkbox-row) {
       padding-left: 0;
 
       label {
@@ -257,7 +260,7 @@
         padding: 0.5em 1em 0.5em 0.5em;
         text-align: right;
         width: @auth-label-width;
-        .box-sizing(border-box);
+        box-sizing: border-box;
       }
 
       .errorlist {
@@ -269,6 +272,17 @@
           font-weight: normal;
           font-size: 9pt;
         }
+      }
+    }
+
+    &.auth-field-row.checkbox-row {
+      input {
+        vertical-align: top;
+      }
+
+      label {
+        display: inline-block;
+        width: @auth-field-width;
       }
     }
   }
@@ -335,13 +349,23 @@
           text-align: left;
           width: auto;
         }
+
+        .errorlist {
+          margin-left: 0;
+        }
       }
+    }
+
+    .auth-header p {
+      margin-left: @page-container-padding;
+      margin-right: @page-container-padding;
     }
 
     .auth-section {
       &.main-auth-section {
         /* Reset the margin that was providing room for the side labels. */
         margin-left: 0;
+        margin-right: 0;
       }
     }
   });
@@ -363,14 +387,9 @@
   }
 }
 
-#auth_container #register_form {
-  .register-captcha-row {
-    padding-left: 0;
-
-    .register-captcha-container {
-      float: right;
-    }
-  }
+#auth_container .register-captcha-row {
+  float: right;
+  padding-left: 0;
 }
 
 
@@ -448,103 +467,10 @@
   padding: 3px 6px;
 }
 
-
-/****************************************************************************
- * User page hover
- ****************************************************************************/
-
-#user_infobox {
-  .infobox-pic {
-    float: left;
-    width: 85px;
-    margin-right: 1em;
-  }
-
-  .infobox-text {
-    color: black;
-    float: left;
-    max-width: 200px;
-    word-wrap: break-word;
-  }
-
-  a {
-    text-decoration: none;
-
-    &:hover {
-      text-decoration: underline;
-    }
-  }
-
-  h2 {
-    a {
-      color: inherit;
-    }
-  }
-
-  .logged-in {
-    margin-top: 2em;
-  }
-
-  .logged-in, .joined {
-    font-size: 0.8em;
-  }
-
-  #infobox-text h2 {
-    margin-top: 0;
-    padding-top: 0;
-  }
-}
-
 #submitter {
   position: relative;
 }
 
-
-/****************************************************************************
- * Bug hover
- ****************************************************************************/
-
-#bug_infobox {
-  max-width: 50em;
-  max-height: 25em;
-  overflow: hidden;
-
-  .bug-infobox-text {
-    color: black;
-    float: left;
-    word-wrap: break-word;
-
-    h2 {
-      margin-top: 0;
-      padding-top: 0;
-    }
-  }
-}
-
-#user_infobox, #bug_infobox {
-  background: #F9F9F9;
-  border: 1px black solid;
-  display: block;
-  min-height: 12em;
-  padding: 1em;
-  position: absolute;
-  min-width: 40em;
-  z-index: @z-index-dialog;
-  .border-radius(10px);
-  .box-shadow(0px 0px 4px #000);
-
-  h2 {
-    font-size: 1.4em;
-    margin: 0 0 0.5em 0;
-    padding: 0;
-  }
-
-  p {
-    font-size: 1.2em;
-    margin: 0.5em 0;
-    padding: 0;
-  }
-}
 
 /****************************************************************************
  * New Review Request

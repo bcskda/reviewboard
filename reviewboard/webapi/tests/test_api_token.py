@@ -42,6 +42,7 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase,
     sample_api_url = 'users/<username>/api-tokens/'
     resource = resources.api_token
     test_api_token_access = False
+    test_oauth_token_access = False
 
     compare_item = _compare_item
 
@@ -88,7 +89,7 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase,
     def setup_basic_post_test(self, user, with_local_site, local_site_name,
                               post_valid_data):
         if post_valid_data:
-            post_data = self.token_data
+            post_data = self.token_data.copy()
         else:
             post_data = {}
 
@@ -112,8 +113,9 @@ class ResourceListTests(SpyAgency, ExtraDataListMixin, BaseWebAPITestCase,
     def test_post_with_generation_error(self):
         """Testing the POST users/<username>/api-tokens/ API
         with Token Generation Failed error"""
-        def _generate_token(self, user, **kwargs):
-            orig_generate_token(user, max_attempts=0, **kwargs)
+        def _generate_token(self, *args, **kwargs):
+            kwargs['max_attempts'] = 0
+            orig_generate_token(*args, **kwargs)
 
         orig_generate_token = WebAPIToken.objects.generate_token
 
@@ -150,6 +152,7 @@ class ResourceItemTests(ExtraDataItemMixin, BaseWebAPITestCase,
     sample_api_url = 'users/<username>/api-tokens/<id>/'
     resource = resources.api_token
     test_api_token_access = False
+    test_oauth_token_access = False
 
     compare_item = _compare_item
 
@@ -218,7 +221,7 @@ class ResourceItemTests(ExtraDataItemMixin, BaseWebAPITestCase,
 
         return (get_api_token_item_url(token, local_site_name),
                 api_token_item_mimetype,
-                self.token_data,
+                self.token_data.copy(),
                 token,
                 [])
 

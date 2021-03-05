@@ -6,7 +6,7 @@
 <script type="text/javascript">
     var CACHE_LOCATION_FIELD_MAP = {{form.CACHE_LOCATION_FIELD_MAP|json_dumps:2}};
 
-    function updateAuthFormDisplay() {
+    function updateCacheFormDisplay() {
         var selection = $("#id_cache_type").get(0),
             cache_type = selection.options[selection.selectedIndex].value,
             location_field = CACHE_LOCATION_FIELD_MAP[cache_type];
@@ -21,9 +21,9 @@
     }
 
     $(document).ready(function() {
-        $("#id_cache_type")
-            .change(updateAuthFormDisplay)
-            .triggerHandler("change");
+        $('#id_cache_type').change(updateCacheFormDisplay);
+
+        updateCacheFormDisplay();
     });
 </script>
 {% endblock %}

@@ -13,6 +13,8 @@ After logging in to Review Board, you'll be taken to your dashboard. You can
 always get back to it by clicking :guilabel:`My Dashboard` on the navigation
 banner near the top of the page.
 
+.. image:: dashboard.png
+
 
 Navigation Sidebar
 ==================
@@ -92,13 +94,81 @@ The main area of the dashboard lists the review requests belonging to that
 particular view. This is a detailed, sortable, customizable list.
 
 Clicking on any review request in the list will take you to that particular
-review request, while clicking on a submitter's name will take you to the
-list of review requests submitted by that user. Clicking on a bug link will go
-to the associated bug report (assuming a bug tracker has been connected).
+review request, while clicking on an owner's name will take you to the list of
+review requests submitted by that user. Clicking on a bug link will go to the
+associated bug report (assuming a bug tracker has been connected).
+
+There are also a few infoboxes that appear when hovering over certain cells
+that can provide additional information beyond what's normally shown in the
+Dashboard.
 
 
-Sorting
-=======
+.. _review-request-infobox:
+
+Review Request Infobox
+----------------------
+
+Hovering over a review request will show additional details about that review
+request in a little infobox on the side. This includes the summary,
+description, types of open issues, numbers of reviews, the latest diff
+revision, and more.
+
+.. image:: review-request-infobox.png
+
+While open, you can hover over the infobox to see even more information.
+
+* Hovering over the repository will show details on the commit and branch (if
+  set).
+
+* Hovering over the timestamp will show when the change was created and last
+  updated.
+
+* Hovering over the description will let you scroll to read more about the
+  change.
+
+There are also links for taking you to the reviews, the diff, and the user's
+page.
+
+
+.. _user-infobox:
+
+User Infobox
+------------
+
+Hovering over any username will show information on the user, such as their
+full name, e-mail address, and the local time where they work (based the
+timezone they have set).
+
+The bottom of the infobox provides handy links for viewing the user's review
+requests and published reviews.
+
+.. image:: user-infobox.png
+
+Extensions can also :ref:`add custom information <user-infobox-hook>` to the
+infobox, providing details that might be specific to the organization.
+
+
+.. _bug-infobox:
+
+Bug Infobox
+-----------
+
+When using a compatible bug tracker and enabling the "Bugs" column (see
+:ref:`dashboard-add-remove-columns`), Review Board can show details from any
+referenced bug. This will include the bug number, the current state of the
+bug, and the bug description.
+
+.. image:: bug-infobox.png
+
+Note that this functionality isn't available for all bug trackers yet. You
+will need to use GitHub, Jira, Splat, or a compatible version of Bugzilla.
+
+
+Customizing Your Dashboard
+==========================
+
+Changing the Sorting
+--------------------
 
 The review request list can be sorted by clicking on a column header. Clicking
 once will sort the column in ascending order, and clicking a second time will
@@ -106,11 +176,13 @@ sort that column in descending order. The column will have a little up or
 down arrow indicating the sorting order. You can click the :guilabel:`X` next
 to clear sorting for that column.
 
-The dashboard provides two-level sorting. You can primarily sort by one
-column but in the case of multiple entries for a particular submitter,
-timestamp, etc., you can have secondary sorting on another column. This is set
-by simply clicking one column (which will be the secondary column) and then
-clicking another column (which will be the primary).
+.. image:: column-sorting.png
+
+The dashboard provides two-level sorting. You can primarily sort by one column
+but in the case of multiple entries for a particular owner, timestamp, etc.,
+you can have secondary sorting on another column. This is set by simply
+clicking one column (which will be the secondary column) and then clicking
+another column (which will be the primary).
 
 The primary column is indicated by a black up/down arrow, and the secondary
 column is indicated by a lighter grey up/down arrow.
@@ -119,15 +191,17 @@ Sorting options are saved across sessions.
 
 
 Reordering Columns
-==================
+------------------
 
 Columns in the dashboard can be reordered by clicking and dragging the column.
 The columns will reorder as you're dragging to show you the new layout, and
 when you release the mouse cursor the order will be saved.
 
 
-Customizable Columns
-====================
+.. _dashboard-add-remove-columns:
+
+Adding/Removing Columns
+-----------------------
 
 .. image:: dashboard-columns.png
 
@@ -166,6 +240,7 @@ New Updates             Shows a message bubble icon for any review requests that
                         that you have not opened before.
 Number of Reviews       Shows how many reviews have been done on the review
                         request.
+Owner                   Shows the username of the owner of the review request.
 Posted Time             Shows the timestamp of when the review request was first
                         posted. This is color-coded to indicate the age.
 Posted Time (Relative)  Shows the timestamp of when the review request was first
@@ -176,7 +251,7 @@ Review Request ID       Shows the ID number of the review request.
 Select Rows             Shows a checkbox that allows you to select the row. When
                         one or more review requests are selected, the sidebar
                         will contain bulk modification commands.
-Ship It!                If there are open issues, this shows a count of the open
+Ship It!/Issue Counts   If there are open issues, this shows a count of the open
                         issues in a yellow bubble. If there are no open issues,
                         this shows a count of reviews where the reviewer has
                         marked "Ship It!"
@@ -185,7 +260,6 @@ Starred                 Shows a star indicator that can be toggled. When toggled
                         show up in the "Starred" section of the dashboard, and
                         you will be CC'd on any discussion. Toggling the star
                         off will remove you from the CC list.
-Submitter               Shows the username of the submitter.
 Summary                 Shows the summary text of the review request.
 Target Groups           Shows a list of the assigned groups for the review
                         request.
@@ -196,11 +270,26 @@ To Me                   Shows a chevron for review requests which directly list
 ======================= =======================================================
 
 
+Customizing with Extensions
+---------------------------
+
+If you want additional information available in the Dashboard, you can
+:ref:`write an extension <writing-extensions>` that adds
+:ref:`custom columns <dashboard-columns-hook>`, which can show any kind of
+data you may want for a review request. These might make use of existing data
+in Review Board or in-house data collected by your extension.
+
+Extensions can also provide :ref:`new sidebar items
+<dashboard-sidebar-items-hook>`, which can link to a custom view of the
+Dashboard or a separate page entirely.
+
+
 Bulk Actions
 ============
 
-When the :guilabel:`Select Rows` column is visible, review requests can be
-selected to perform some bulk actions. After selecting one or more rows, the
+When the :guilabel:`Select Rows` column is visible (see
+:ref:`dashboard-add-remove-columns`), review requests can be selected to
+perform some bulk actions. After selecting one or more rows, some of the
 following items will become available:
 
 * :guilabel:`Close Discarded`

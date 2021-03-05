@@ -1,8 +1,9 @@
 from __future__ import unicode_literals
 
-from django.conf.urls import patterns, url
+from django.conf.urls import url
 from django.core.urlresolvers import NoReverseMatch
 from django.http import HttpResponse
+from djblets.registries.errors import AlreadyRegisteredError, ItemLookupError
 
 from reviewboard.hostingsvcs.service import (HostingService,
                                              register_hosting_service,
@@ -25,12 +26,11 @@ class HostingServiceRegistrationTests(TestCase):
     class DummyServiceWithURLs(HostingService):
         name = 'DummyServiceWithURLs'
 
-        repository_url_patterns = patterns(
-            '',
-
-            url(r'^hooks/pre-commit/$', hosting_service_url_test_view,
+        repository_url_patterns = [
+            url(r'^hooks/pre-commit/$',
+                hosting_service_url_test_view,
                 name='dummy-service-post-commit-hook'),
-        )
+        ]
 
     def tearDown(self):
         super(HostingServiceRegistrationTests, self).tearDown()
@@ -41,14 +41,14 @@ class HostingServiceRegistrationTests(TestCase):
         # This will match whichever service we added for testing.
         try:
             unregister_hosting_service('dummy-service')
-        except KeyError:
+        except ItemLookupError:
             pass
 
     def test_register_without_urls(self):
         """Testing HostingService registration"""
         register_hosting_service('dummy-service', self.DummyService)
 
-        with self.assertRaises(KeyError):
+        with self.assertRaises(AlreadyRegisteredError):
             register_hosting_service('dummy-service', self.DummyService)
 
     def test_unregister(self):
@@ -80,7 +80,7 @@ class HostingServiceRegistrationTests(TestCase):
             '/s/test-site/repos/1/dummy-service/hooks/pre-commit/')
 
         # Once registered, should not be able to register again
-        with self.assertRaises(KeyError):
+        with self.assertRaises(AlreadyRegisteredError):
             register_hosting_service('dummy-service',
                                      self.DummyServiceWithURLs)
 
@@ -98,5 +98,5 @@ class HostingServiceRegistrationTests(TestCase):
                 }),
 
         # Once unregistered, should not be able to unregister again
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ItemLookupError):
             unregister_hosting_service('dummy-service')
